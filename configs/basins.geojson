@@ -1,0 +1,33 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {"id": "atlantic_n"},
+      "geometry": {"type": "Polygon", "coordinates": [[
+        [-80.0, 60.0], [-10.0, 60.0], [-10.0, 0.0], [-80.0, 0.0], [-80.0, 60.0]
+      ]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"id": "caribbean"},
+      "geometry": {"type": "Polygon", "coordinates": [[
+        [-90.0, 25.0], [-60.0, 25.0], [-60.0, 5.0], [-90.0, 5.0], [-90.0, 25.0]
+      ]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"id": "east_pacific"},
+      "geometry": {"type": "Polygon", "coordinates": [[
+        [-120.0, 30.0], [-70.0, 30.0], [-70.0, -10.0], [-120.0, -10.0], [-120.0, 30.0]
+      ]]}
+    },
+    {
+      "type": "Feature",
+      "properties": {"id": "pacific_n"},
+      "geometry": {"type": "Polygon", "coordinates": [[
+        [-160.0, 60.0], [-100.0, 60.0], [-100.0, 20.0], [-160.0, 20.0], [-160.0, 60.0]
+      ]]}
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+nodes:
+  - id: atlantic_n
+    name: North Atlantic
+    type: basin
+  - id: caribbean
+    name: Caribbean Sea
+    type: basin
+  - id: panama
+    name: Panama Canal
+    type: chokepoint
+  - id: east_pacific
+    name: East Pacific
+    type: basin
+  - id: pacific_n
+    name: North Pacific
+    type: basin
+
+edges:
+  - from: atlantic_n
+    to: caribbean
+    weight_nm: 1000
+    waypoints:
+      - [-66.0, 18.0]
+  - from: caribbean
+    to: panama
+    weight_nm: 1200
+    waypoints:
+      - [-79.9, 9.3]
+  - from: panama
+    to: east_pacific
+    weight_nm: 200
+    waypoints:
+      - [-79.6, 9.0]
+  - from: east_pacific
+    to: pacific_n
+    weight_nm: 1800
+    waypoints:
+      - [-90.0, 20.0]

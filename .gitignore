@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.env
+.venv/
+.env
+.env.*
+.venv
+.envrc
+
+# Data
+/data/processed/
+/data/raw/
+
+# Raster caches
+*.tif
+*.npy
+*.npz
+
+# Editor
+.vscode/
+.idea/
