@@ -22,17 +22,37 @@ class Bathy:
     def depth(self) -> np.memmap:
         return self.loader.array
 
-    def is_safe(self, y: int, x: int, min_depth: float) -> bool:
+    def is_safe(self, y: int, x: int, min_draft: float) -> bool:
+        """Check if cell is safe for a vessel with given draft.
+        
+        GEBCO uses negative values for depth below sea level.
+        A cell is safe if: depth <= -min_draft (water is deep enough)
+        
+        Args:
+            y, x: Grid coordinates
+            min_draft: Minimum required water depth in meters (positive value)
+        """
         depth = float(self.depth[y, x])
         if depth == self.nodata:
             return False
-        return depth >= min_depth
+        # GEBCO: negative = underwater, positive = above water
+        # Safe if depth is negative (underwater) and abs(depth) >= draft
+        return depth <= -min_draft
 
-    def depth_penalty(self, y: int, x: int, min_depth: float, near_threshold_penalty: float = 0.0) -> float:
+    def depth_penalty(self, y: int, x: int, min_draft: float, near_threshold_penalty: float = 0.0) -> float:
+        """Calculate penalty for shallow water.
+        
+        Args:
+            y, x: Grid coordinates
+            min_draft: Minimum required water depth in meters (positive value)
+            near_threshold_penalty: Penalty weight for near-threshold depths
+        """
         depth = float(self.depth[y, x])
-        if depth == self.nodata or depth < min_depth:
+        if depth == self.nodata or depth > -min_draft:
             return float("inf")
-        slack = max(depth - min_depth, 1e-3)
+        # Calculate slack (how much deeper than required)
+        water_depth = -depth  # Convert to positive depth
+        slack = max(water_depth - min_draft, 1e-3)
         return near_threshold_penalty / slack
 
 

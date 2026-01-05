@@ -1,8 +1,11 @@
 """Rasterize OSM land polygons to a global 1 nm grid."""
 from __future__ import annotations
 
-import argparse
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
+import argparse
 
 import numpy as np
 import rasterio
@@ -15,16 +18,33 @@ from ocean_router.core.memmaps import save_memmap
 
 
 def rasterize_land(polygons_path: Path, grid: GridSpec, out_tif: Path, out_npy: Path, iterations: int = 1) -> None:
-    with fiona.open(polygons_path) as src:
-        shapes = [shape(feat["geometry"]) for feat in src]
+    """Rasterize land polygons using streaming to avoid memory issues."""
     transform = rasterio.transform.from_origin(grid.xmin, grid.ymax, grid.dx, grid.dy)
+    
+    print(f"Reading land polygons from {polygons_path}...")
+    
+    # Stream polygons directly to rasterizer without loading all into memory
+    def shape_generator():
+        with fiona.open(polygons_path) as src:
+            total = len(src)
+            print(f"  Total features: {total:,}")
+            for i, feat in enumerate(src):
+                if i % 50000 == 0:
+                    print(f"  Processing feature {i:,}/{total:,}...")
+                yield (shape(feat["geometry"]), 1)
+    
+    print("Rasterizing...")
     raster = features.rasterize(
-        ((geom, 1) for geom in shapes),
+        shape_generator(),
         out_shape=(grid.height, grid.width),
         transform=transform,
         fill=0,
         dtype="uint8",
     )
+    
+    print(f"Land pixels: {np.sum(raster > 0):,} / {raster.size:,}")
+    
+    print(f"Saving GeoTIFF to {out_tif}...")
     with rasterio.open(
         out_tif,
         "w",
@@ -35,8 +55,11 @@ def rasterize_land(polygons_path: Path, grid: GridSpec, out_tif: Path, out_npy: 
         dtype="uint8",
         crs=grid.crs,
         transform=transform,
+        compress="lzw",
     ) as dst:
         dst.write(raster, 1)
+    
+    print(f"Saving numpy array to {out_npy}...")
     save_memmap(out_npy, raster.astype(np.uint8), dtype=np.uint8)
 
     if iterations > 0:
