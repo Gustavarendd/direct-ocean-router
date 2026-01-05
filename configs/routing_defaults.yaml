@@ -1,0 +1,11 @@
+corridor:
+  offshore_buffer_nm: 500
+  chokepoint_buffer_nm: 50
+  min_width_nm: 25
+routing:
+  allow_diagonals: true
+  max_turn_deg: 120
+  tss_wrong_way_penalty: 50.0
+  tss_alignment_weight: 10.0
+  near_shore_depth_penalty: 5.0
+  density_bias: -2.0

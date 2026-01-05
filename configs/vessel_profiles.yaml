@@ -1,0 +1,11 @@
+profiles:
+  default:
+    draft_m: 9.5
+    safety_margin_m: 2.0
+    tss_bias: 1.0
+    density_bias: 0.25
+  deep_draft:
+    draft_m: 14.0
+    safety_margin_m: 2.5
+    tss_bias: 1.5
+    density_bias: 0.5
