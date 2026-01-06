@@ -1,95 +1,113 @@
 <!DOCTYPE html>
 <html>
-<head>
+  <head>
     <title>Route Visualization - Friesland</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
-        #map { height: 100vh; width: 100%; }
-        body { margin: 0; }
-        .info { 
-            padding: 10px 15px; 
-            background: white; 
-            border-radius: 5px; 
-            box-shadow: 0 2px 5px rgba(0,0,0,0.3);
-            position: absolute;
-            top: 10px;
-            right: 10px;
-            z-index: 1000;
-        }
+      #map {
+        height: 100vh;
+        width: 100%;
+      }
+      body {
+        margin: 0;
+      }
+      .info {
+        padding: 10px 15px;
+        background: white;
+        border-radius: 5px;
+        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 1000;
+      }
     </style>
-</head>
-<body>
+  </head>
+  <body>
     <div id="map"></div>
     <div class="info">
-        <strong>Route Info</strong><br>
-        Distance: 145.25 nm<br>
-        Waypoints: 8
+      <strong>Route Info</strong><br />
+      Distance: 145.25 nm<br />
+      Waypoints: 8
     </div>
     <script>
-        const path = [
-            [52.68750014925, 3.1291659341500235],
-            [52.987500148049996, 3.387499266450021],
-            [53.40416681305, 3.7041659318500137],
-            [53.53750014585, 3.829165931350019],
-            [53.77916681155, 4.3541659292500015],
-            [53.91250014435, 4.56249926175002],
-            [54.00416681065, 4.920832593650005],
-            [54.63750014145, 5.270832592250002]
-        ];
-        
-        const map = L.map('map').setView([53.5, 4.2], 7);
-        
-        // OpenSeaMap layers
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap'
+      const path = [
+        [52.68750014925, 3.1291659341500235],
+        [52.987500148049996, 3.387499266450021],
+        [53.40416681305, 3.7041659318500137],
+        [53.53750014585, 3.829165931350019],
+        [53.77916681155, 4.3541659292500015],
+        [53.91250014435, 4.56249926175002],
+        [54.00416681065, 4.920832593650005],
+        [54.63750014145, 5.270832592250002],
+      ];
+
+      const map = L.map("map").setView([53.5, 4.2], 7);
+
+      // OpenSeaMap layers
+      L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+        attribution: "© OpenStreetMap",
+      }).addTo(map);
+
+      // Add seamark layer
+      L.tileLayer("https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png", {
+        attribution: "© OpenSeaMap",
+      }).addTo(map);
+
+      // Add route line
+      const routeCoords = path.map(p => [p[0], p[1]]);
+      L.polyline(routeCoords, {
+        color: "#0066ff",
+        weight: 4,
+        opacity: 0.8,
+      }).addTo(map);
+
+      // Add waypoint markers
+      path.forEach((wp, i) => {
+        const [lat, lon] = wp;
+        let color = "#0066ff";
+        if (i === 0) color = "#00cc00";
+        else if (i === path.length - 1) color = "#cc0000";
+
+        L.circleMarker([lat, lon], {
+          radius: 10,
+          fillColor: color,
+          color: "#fff",
+          weight: 2,
+          fillOpacity: 0.9,
+        })
+          .bindPopup(
+            "<strong>WP" +
+              (i + 1) +
+              "</strong><br>" +
+              "Lat: " +
+              lat.toFixed(5) +
+              "<br>" +
+              "Lon: " +
+              lon.toFixed(5),
+          )
+          .addTo(map);
+
+        // Add label
+        L.marker([lat, lon], {
+          icon: L.divIcon({
+            className: "wp-label",
+            html:
+              '<div style="background:white;padding:2px 5px;border-radius:3px;font-size:11px;font-weight:bold;border:1px solid #666;">WP' +
+              (i + 1) +
+              "</div>",
+            iconSize: [40, 20],
+            iconAnchor: [-5, 10],
+          }),
         }).addTo(map);
-        
-        // Add seamark layer
-        L.tileLayer('https://tiles.openseamap.org/seamark/{z}/{x}/{y}.png', {
-            attribution: '© OpenSeaMap'
-        }).addTo(map);
-        
-        // Add route line
-        const routeCoords = path.map(p => [p[0], p[1]]);
-        L.polyline(routeCoords, {
-            color: '#0066ff',
-            weight: 4,
-            opacity: 0.8
-        }).addTo(map);
-        
-        // Add waypoint markers
-        path.forEach((wp, i) => {
-            const [lat, lon] = wp;
-            let color = '#0066ff';
-            if (i === 0) color = '#00cc00';
-            else if (i === path.length - 1) color = '#cc0000';
-            
-            L.circleMarker([lat, lon], {
-                radius: 10,
-                fillColor: color,
-                color: '#fff',
-                weight: 2,
-                fillOpacity: 0.9
-            }).bindPopup(
-                '<strong>WP' + (i + 1) + '</strong><br>' +
-                'Lat: ' + lat.toFixed(5) + '<br>' +
-                'Lon: ' + lon.toFixed(5)
-            ).addTo(map);
-            
-            // Add label
-            L.marker([lat, lon], {
-                icon: L.divIcon({
-                    className: 'wp-label',
-                    html: '<div style="background:white;padding:2px 5px;border-radius:3px;font-size:11px;font-weight:bold;border:1px solid #666;">WP' + (i + 1) + '</div>',
-                    iconSize: [40, 20],
-                    iconAnchor: [-5, 10]
-                })
-            }).addTo(map);
-        });
-        
-        // Fit bounds
-        map.fitBounds(routeCoords, { padding: [50, 50] });
+      });
+
+      // Fit bounds
+      map.fitBounds(routeCoords, { padding: [50, 50] });
     </script>
-</body>
+  </body>
 </html>
