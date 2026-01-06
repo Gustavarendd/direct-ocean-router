@@ -52,6 +52,23 @@ def get_seamark_type(feature: dict) -> str | None:
     return None
 
 
+def is_precautionary_area(feature: dict) -> bool:
+    """Check if feature is a precautionary area (advisory, not mandatory)."""
+    props = feature.get("properties", {})
+    
+    # Check parsed_other_tags first
+    parsed = props.get("parsed_other_tags", {})
+    if parsed and parsed.get("seamark:information") == "precautionary_area":
+        return True
+    
+    # Check other_tags string
+    other_tags = props.get("other_tags", "")
+    if "precautionary_area" in other_tags:
+        return True
+    
+    return False
+
+
 def get_flow_bearing(feature: dict) -> float | None:
     """Extract flow bearing from feature properties."""
     props = feature.get("properties", {})
@@ -151,16 +168,22 @@ def build_direction_field_from_features(
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build TSS fields from GeoJSON with flow directions")
     parser.add_argument("--grid", type=Path, default=Path("configs/grid_1nm.json"))
+    parser.add_argument("--resolution", type=str, default="1nm", 
+                        help="Resolution suffix for output files (1nm or 0.5nm)")
     parser.add_argument("--tss-geojson", type=Path, required=True, 
                         help="GeoJSON file with TSS features and tss_flow_bearing_deg")
     parser.add_argument("--outdir", type=Path, default=Path("data/processed/tss"))
     parser.add_argument("--influence-nm", type=float, default=2.0,
                         help="Influence radius in nautical miles for direction field")
     args = parser.parse_args()
+    
+    # Derive file suffix from resolution (e.g., "0.5nm" -> "05nm")
+    suffix = args.resolution.replace(".", "")
 
     grid = GridSpec.from_file(args.grid)
     args.outdir.mkdir(parents=True, exist_ok=True)
 
+    print(f"[RESOLUTION] Building TSS fields at {args.resolution} ({grid.width}x{grid.height})")
     print(f"Loading TSS data from {args.tss_geojson}...")
     geojson = load_geojson(args.tss_geojson)
     features_list = geojson.get("features", [])
@@ -170,6 +193,7 @@ def main() -> None:
     lane_features = []
     zone_features = []
     boundary_features = []
+    precautionary_count = 0
     
     for feat in features_list:
         seamark_type = get_seamark_type(feat)
@@ -178,25 +202,32 @@ def main() -> None:
         elif seamark_type in TSS_ZONE_TYPES:
             zone_features.append(feat)
         elif seamark_type in TSS_BOUNDARY_TYPES:
+            # Skip precautionary areas - they are advisory, not mandatory
+            if is_precautionary_area(feat):
+                precautionary_count += 1
+                continue
             boundary_features.append(feat)
     
     print(f"  Separation lanes: {len(lane_features)}")
     print(f"  Separation zones: {len(zone_features)}")
-    print(f"  Boundaries/lines: {len(boundary_features)}")
+    print(f"  Boundaries/lines: {len(boundary_features)} (excluded {precautionary_count} precautionary areas)")
 
     # Rasterize lane mask (buffer lines to create lane areas)
     print("Building lane mask...")
     lane_shapes = []
     for feat in lane_features:
         geom = shape(feat["geometry"])
-        # Buffer lines by ~0.5nm to create lane areas
+        # Buffer lines to create continuous lane areas
+        # Use same physical buffer (1.5nm) regardless of resolution
+        # This ensures lanes are wide enough for simplification to work
+        buffer_nm = 0.75
         if geom.geom_type in ("LineString", "MultiLineString"):
-            buffered = geom.buffer(0.5 / 60)  # 0.5nm in degrees
+            buffered = geom.buffer(buffer_nm / 60)  # Convert nm to degrees
             lane_shapes.append((buffered, 1))
         else:
             lane_shapes.append((geom, 1))
     
-    lane_mask = rasterize_mask(lane_shapes, grid, args.outdir / "tss_lane_mask_1nm.npy")
+    lane_mask = rasterize_mask(lane_shapes, grid, args.outdir / f"tss_lane_mask_{suffix}.npy")
     print(f"  Lane mask: {np.sum(lane_mask > 0)} cells")
 
     # Rasterize separation zone mask
@@ -206,21 +237,54 @@ def main() -> None:
         geom = shape(feat["geometry"])
         zone_shapes.append((geom, 1))
     
-    sep_mask = rasterize_mask(zone_shapes, grid, args.outdir / "tss_sepzone_mask_1nm.npy")
+    sep_mask = rasterize_mask(zone_shapes, grid, args.outdir / f"tss_sepzone_mask_{suffix}.npy")
     print(f"  Separation zone mask: {np.sum(sep_mask > 0)} cells")
+
+    # Rasterize separation boundary mask (lines that shouldn't be crossed)
+    print("Building separation boundary mask...")
+    boundary_shapes = []
+    for feat in boundary_features:
+        geom = shape(feat["geometry"])
+        # Buffer boundary lines by 1nm to ensure continuous coverage
+        # This is important for routing to detect crossings properly
+        buffer_nm = 0.5
+        if geom.geom_type in ("LineString", "MultiLineString"):
+            buffered = geom.buffer(buffer_nm / 60)  # Convert nm to degrees
+            boundary_shapes.append((buffered, 1))
+        else:
+            boundary_shapes.append((geom, 1))
+    
+    boundary_mask = rasterize_mask(boundary_shapes, grid, args.outdir / f"tss_sepboundary_mask_{suffix}.npy")
+    print(f"  Separation boundary mask: {np.sum(boundary_mask > 0)} cells")
 
     # Build direction field from lane features with bearings
     print("Building direction field...")
     build_direction_field_from_features(
-        lane_features, grid, args.outdir / "tss_dir_field_1nm.npy", 
+        lane_features, grid, args.outdir / f"tss_dir_field_{suffix}.npy", 
         influence_nm=args.influence_nm
     )
 
-    # Remove separation zones from lane mask
+    # Clean up overlaps - proper layering:
+    # 1. Remove separation zones from lane mask (zones are in the middle, not lanes)
+    # 2. Remove lanes from boundary mask (boundaries are edges, not inside lanes)
+    # 3. Remove separation zones from boundary mask (zones have their own mask)
+    print("Cleaning up layer overlaps...")
+    
     if np.any(sep_mask):
         lane_mask[sep_mask.astype(bool)] = 0
-        save_memmap(args.outdir / "tss_lane_mask_1nm.npy", lane_mask, dtype=np.uint8)
-        print("  Updated lane mask (removed separation zones)")
+        print(f"  Removed separation zones from lanes: {np.sum(lane_mask > 0)} lane cells remaining")
+    
+    if np.any(lane_mask):
+        boundary_mask[lane_mask.astype(bool)] = 0
+        print(f"  Removed lanes from boundaries: {np.sum(boundary_mask > 0)} boundary cells remaining")
+    
+    if np.any(sep_mask):
+        boundary_mask[sep_mask.astype(bool)] = 0
+        print(f"  Removed sep zones from boundaries: {np.sum(boundary_mask > 0)} boundary cells remaining")
+    
+    # Save cleaned masks
+    save_memmap(args.outdir / f"tss_lane_mask_{suffix}.npy", lane_mask, dtype=np.uint8)
+    save_memmap(args.outdir / f"tss_sepboundary_mask_{suffix}.npy", boundary_mask, dtype=np.uint8)
 
     print("Done!")
 

@@ -10,15 +10,37 @@ from ocean_router.core.geodesy import angle_diff_deg, move_cost_nm
 from ocean_router.data.bathy import Bathy
 from ocean_router.data.tss import TSSFields
 from ocean_router.data.density import Density
+from ocean_router.data.land import LandMask
 
 
 @dataclass
 class CostWeights:
-    tss_wrong_way_penalty: float = 50.0
-    tss_alignment_weight: float = 10.0
+    tss_wrong_way_penalty: float = 10000.0  # Going wrong way in lane - dangerous
+    tss_alignment_weight: float = 1.5   # Modest preference for using TSS lanes correctly
+    tss_lane_crossing_penalty: float = 5.0  # Small penalty for exiting lanes
+    tss_sepzone_crossing_penalty: float = 10000.0  # High penalty for separation zones
+    tss_sepboundary_crossing_penalty: float = 5000.0  # Very high penalty for crossing boundary lines
     near_shore_depth_penalty: float = 5.0
+    land_proximity_penalty: float = 100.0  # Strong penalty for being close to land
     density_bias: float = -2.0
     turn_penalty_weight: float = 0.5
+
+    @classmethod
+    def from_config(cls, config: dict) -> "CostWeights":
+        """Create CostWeights from a config dictionary."""
+        weights = cls(
+            tss_wrong_way_penalty=config.get("tss_wrong_way_penalty", 10000.0),
+            tss_alignment_weight=config.get("tss_alignment_weight", 1.5),
+            tss_lane_crossing_penalty=config.get("tss_lane_crossing_penalty", 5.0),
+            tss_sepzone_crossing_penalty=config.get("tss_sepzone_crossing_penalty", 10000.0),
+            tss_sepboundary_crossing_penalty=config.get("tss_sepboundary_crossing_penalty", 5000.0),
+            near_shore_depth_penalty=config.get("near_shore_depth_penalty", 5.0),
+            land_proximity_penalty=config.get("land_proximity_penalty", 100.0),
+            density_bias=config.get("density_bias", -2.0),
+            turn_penalty_weight=config.get("turn_penalty_weight", 0.5),
+        )
+        print(f"[CostWeights] Loaded: wrong_way={weights.tss_wrong_way_penalty}, alignment={weights.tss_alignment_weight}, land_prox={weights.land_proximity_penalty}, sepboundary={weights.tss_sepboundary_crossing_penalty}")
+        return weights
 
 
 @dataclass
@@ -28,18 +50,51 @@ class CostContext:
     density: Optional[Density]
     grid_dx: float
     grid_dy: float
+    goal_bearing: Optional[float] = None  # Overall bearing to goal for TSS filtering
+    land: Optional[LandMask] = None  # Land mask for proximity penalties
 
-    def move_cost(self, y: int, x: int, lat: float, prev_bearing: Optional[float], move_bearing: float, min_draft: float, weights: CostWeights) -> float:
+    def move_cost(
+        self,
+        y: int,
+        x: int,
+        lat: float,
+        prev_bearing: Optional[float],
+        move_bearing: float,
+        min_draft: float,
+        weights: CostWeights,
+        prev_y: Optional[int] = None,
+        prev_x: Optional[int] = None,
+    ) -> float:
         """Calculate cost to move to cell (y, x).
         
         Args:
             min_draft: Minimum required water depth in meters (positive value)
+            prev_y: Previous cell y coordinate (for boundary crossing detection)
+            prev_x: Previous cell x coordinate (for boundary crossing detection)
         """
         step_cost = move_cost_nm(self.grid_dx, self.grid_dy, lat)
         penalty = 0.0
         penalty += self.bathy.depth_penalty(y, x, min_draft, weights.near_shore_depth_penalty)
+        if self.land and weights.land_proximity_penalty > 0:
+            penalty += self.land.proximity_penalty(y, x, max_distance_cells=12, penalty_weight=weights.land_proximity_penalty)
         if self.tss:
-            penalty += self.tss.alignment_penalty(y, x, move_bearing, weights.tss_wrong_way_penalty, weights.tss_alignment_weight)
+            penalty += self.tss.alignment_penalty(
+                y, x, move_bearing, 
+                weights.tss_wrong_way_penalty, 
+                weights.tss_alignment_weight,
+                prev_y=prev_y, 
+                prev_x=prev_x,
+                goal_bearing=self.goal_bearing,
+                max_lane_deviation_deg=100.0
+            )
+            # Add boundary crossing penalties
+            if prev_y is not None and prev_x is not None:
+                penalty += self.tss.boundary_crossing_penalty(
+                    prev_y, prev_x, y, x,
+                    weights.tss_lane_crossing_penalty,
+                    weights.tss_sepzone_crossing_penalty,
+                    weights.tss_sepboundary_crossing_penalty
+                )
         if self.density:
             penalty += self.density.bias(y, x, weights.density_bias)
         if prev_bearing is not None:

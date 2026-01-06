@@ -92,7 +92,10 @@ class CorridorAStar:
                     continue
                 move_bearing = bearing_deg(cur_lon, cur_lat, *self.grid.xy_to_lonlat(nx, ny))
                 prev_b = prev_bearing.get(current)
-                tentative_g = g_score[current] + context.move_cost(ny, nx, cur_lat, prev_b, move_bearing, min_depth, weights)
+                tentative_g = g_score[current] + context.move_cost(
+                    ny, nx, cur_lat, prev_b, move_bearing, min_depth, weights,
+                    prev_y=cur_y, prev_x=cur_x
+                )
                 neighbor = (nx, ny)
                 if tentative_g < g_score.get(neighbor, float("inf")):
                     came_from[neighbor] = current

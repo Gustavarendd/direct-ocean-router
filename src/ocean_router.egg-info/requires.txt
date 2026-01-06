@@ -11,6 +11,7 @@ fastapi>=0.110
 uvicorn>=0.23
 orjson>=3.9
 typer>=0.9
+pyyaml>=6.0
 
 [numba]
 numba>=0.58

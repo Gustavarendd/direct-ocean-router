@@ -72,15 +72,26 @@ def rasterize_land(polygons_path: Path, grid: GridSpec, out_tif: Path, out_npy: 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--grid", type=Path, default=Path("configs/grid_1nm.json"))
+    parser.add_argument("--resolution", type=str, default="1nm",
+                        help="Resolution suffix for output files (1nm or 0.5nm)")
     parser.add_argument("--land", type=Path, required=True, help="Path to land_polygons.shp")
-    parser.add_argument("--out", type=Path, default=Path("data/processed/land/land_mask_1nm.tif"))
+    parser.add_argument("--out", type=Path, default=None, help="Path to save output (auto-generated if not provided)")
     args = parser.parse_args()
-
+    
+    # Derive file suffix from resolution (e.g., "0.5nm" -> "05nm")
+    suffix = args.resolution.replace(".", "")
+    
+    # Auto-generate output path if not provided
+    if args.out is None:
+        out_tif = Path(f"data/processed/land/land_mask_{suffix}.tif")
+    else:
+        out_tif = args.out
+    
     grid = GridSpec.from_file(args.grid)
-    out_tif = args.out
     out_tif.parent.mkdir(parents=True, exist_ok=True)
     out_npy = out_tif.with_suffix(".npy")
 
+    print(f"[RESOLUTION] Building land mask at {args.resolution} ({grid.width}x{grid.height})")
     rasterize_land(args.land, grid, out_tif, out_npy, iterations=2)
 
 

@@ -71,11 +71,22 @@ def resample_bathy(gebco_src, grid: GridSpec, out_npy: Path, nodata: int = -3276
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build bathymetry grid from GEBCO tiles")
     parser.add_argument("--grid", type=Path, default=Path("configs/grid_1nm.json"))
+    parser.add_argument("--resolution", type=str, default="1nm",
+                        help="Resolution suffix for output files (1nm or 0.5nm)")
     parser.add_argument("--gebco-dir", type=Path, required=True, 
                         help="Directory containing GEBCO GeoTIFF tiles")
-    parser.add_argument("--out", type=Path, default=Path("data/processed/bathy/depth_1nm.npy"))
+    parser.add_argument("--out", type=Path, default=None, help="Output path (auto-generated if not provided)")
     parser.add_argument("--nodata", type=int, default=-32768)
     args = parser.parse_args()
+
+    # Derive file suffix from resolution (e.g., "0.5nm" -> "05nm")
+    suffix = args.resolution.replace(".", "")
+    
+    # Auto-generate output path if not provided
+    if args.out is None:
+        out_path = Path(f"data/processed/bathy/depth_{suffix}.npy")
+    else:
+        out_path = args.out
 
     grid = GridSpec.from_file(args.grid)
     
@@ -84,6 +95,7 @@ def main() -> None:
     if not tile_paths:
         raise FileNotFoundError(f"No GEBCO tiles found in {args.gebco_dir}")
     
+    print(f"[RESOLUTION] Building bathymetry at {args.resolution} ({grid.width}x{grid.height})")
     print(f"Found {len(tile_paths)} GEBCO tiles:")
     for p in tile_paths:
         print(f"  - {p.name}")
@@ -92,7 +104,7 @@ def main() -> None:
     merged_src = merge_gebco_tiles(tile_paths)
     
     print(f"Resampling to grid ({grid.width}x{grid.height})...")
-    resample_bathy(merged_src, grid, args.out, nodata=args.nodata)
+    resample_bathy(merged_src, grid, out_path, nodata=args.nodata)
     merged_src.close()
 
 

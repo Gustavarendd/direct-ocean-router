@@ -69,6 +69,65 @@ def _line_of_sight_clear(
     return True
 
 
+def _line_too_close_to_land(
+    p0: Tuple[int, int],
+    p1: Tuple[int, int],
+    distance_from_land: np.ndarray,
+    min_distance_cells: int = 5,
+    tss: Optional['TSSFields'] = None
+) -> bool:
+    """Check if any point along a line is too close to land.
+    
+    Uses Bresenham's algorithm to check all cells along the line.
+    Points inside TSS lanes are exempt from the check (shipping lanes are safe).
+    
+    Args:
+        p0: Start point (x, y)
+        p1: End point (x, y)
+        distance_from_land: Array of distances from land (in cells)
+        min_distance_cells: Minimum allowed distance from land (default 5 = ~5nm)
+        tss: Optional TSSFields - if provided, points in TSS lanes are exempt
+        
+    Returns:
+        True if line passes too close to land (outside of TSS lanes)
+    """
+    x0, y0 = p0
+    x1, y1 = p1
+    
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx - dy
+    
+    x, y = x0, y0
+    h, w = distance_from_land.shape
+    
+    while True:
+        # Check bounds and distance from land
+        if 0 <= y < h and 0 <= x < w:
+            dist = distance_from_land[y, x]
+            if dist < min_distance_cells:
+                # Allow if inside a TSS lane (shipping lanes are safe near land)
+                if tss is not None and tss.in_lane(y, x):
+                    pass  # OK - in a shipping lane
+                else:
+                    return True  # Too close to land outside shipping lane
+        
+        if x == x1 and y == y1:
+            break
+        
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x += sx
+        if e2 < dx:
+            err += dx
+            y += sy
+    
+    return False
+
+
 def smooth_path_xy(
     path_xy: List[Tuple[int, int]],
     is_blocked: Callable[[int, int], bool],
@@ -82,19 +141,80 @@ def smooth_path_xy(
     if len(path_xy) < 3:
         return path_xy
     
+    def line_validator(p0: Tuple[int, int], p1: Tuple[int, int]) -> bool:
+        return _line_of_sight_clear(p0, p1, is_blocked)
+    
+    return _smooth_path_with_validator(path_xy, line_validator, max_skip)
+
+
+def _smooth_path_with_validator(
+    path_xy: List[Tuple[int, int]],
+    line_is_valid: Callable[[Tuple[int, int], Tuple[int, int]], bool],
+    max_skip: int = 500
+) -> List[Tuple[int, int]]:
+    """Smooth a grid path using a custom line validator.
+    
+    Args:
+        path_xy: List of (x, y) grid coordinates
+        line_is_valid: Function that takes (start, end) points and returns True if the line is valid
+        max_skip: Maximum number of points to try skipping at once
+        
+    Returns:
+        Smoothed path
+    """
+    if len(path_xy) < 3:
+        return path_xy
+    
     # First check: can we go directly from start to end?
-    if _line_of_sight_clear(path_xy[0], path_xy[-1], is_blocked):
+    if line_is_valid(path_xy[0], path_xy[-1]):
         return [path_xy[0], path_xy[-1]]
     
     # Do multiple passes until no improvement
     current = path_xy
     while True:
-        smoothed = _smooth_pass(current, is_blocked, max_skip)
+        smoothed = _smooth_pass_with_validator(current, line_is_valid, max_skip)
         if len(smoothed) >= len(current):
             break  # No improvement
         current = smoothed
     
     return current
+
+
+def _smooth_pass_with_validator(
+    path_xy: List[Tuple[int, int]],
+    line_is_valid: Callable[[Tuple[int, int], Tuple[int, int]], bool],
+    max_skip: int
+) -> List[Tuple[int, int]]:
+    """Single pass of path smoothing with custom validator."""
+    if len(path_xy) < 3:
+        return path_xy
+    
+    smoothed = [path_xy[0]]
+    i = 0
+    
+    while i < len(path_xy) - 1:
+        # Try to skip as far as possible (check farthest first for efficiency)
+        best_j = i + 1
+        
+        # For long distances, check end first
+        if line_is_valid(path_xy[i], path_xy[-1]):
+            smoothed.append(path_xy[-1])
+            break
+        
+        # Binary search for farthest visible point
+        lo, hi = i + 1, min(i + max_skip, len(path_xy) - 1)
+        
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if line_is_valid(path_xy[i], path_xy[mid]):
+                lo = mid
+            else:
+                hi = mid - 1
+        
+        smoothed.append(path_xy[lo])
+        i = lo
+    
+    return smoothed
 
 
 def _smooth_pass(
@@ -401,10 +521,29 @@ class HierarchicalAStar:
                     x, y = px, py
                 path_indices.reverse()
                 
-                # Smooth the path using line-of-sight
+                # Smooth the path using line-of-sight (TSS-aware and land-aware)
+                min_land_distance_cells = 5  # Minimum distance from land in grid cells (~5nm)
+                
                 def is_blocked(x: int, y: int) -> bool:
                     return context.blocked(y, x, min_depth)
-                smoothed = smooth_path_xy(path_indices, is_blocked)
+                
+                def line_is_valid(p0: Tuple[int, int], p1: Tuple[int, int]) -> bool:
+                    if not _line_of_sight_clear(p0, p1, is_blocked):
+                        return False
+                    # Check if line passes too close to land (TSS lanes are exempt)
+                    if context.land is not None:
+                        if _line_too_close_to_land(p0, p1, context.land.distance_from_land, min_land_distance_cells, context.tss):
+                            return False
+                    # Only check separation zone/boundary crossings
+                    # A* already ensured the path follows correct TSS directions
+                    if context.tss is not None:
+                        x0, y0 = p0
+                        x1, y1 = p1
+                        if context.tss.line_crosses_boundary(y0, x0, y1, x1):
+                            return False
+                    return True
+                
+                smoothed = _smooth_path_with_validator(path_indices, line_is_valid)
                 
                 lonlats = [self.grid.xy_to_lonlat(x, y) for x, y in smoothed]
                 return AStarResult(
@@ -453,11 +592,26 @@ class HierarchicalAStar:
                 penalty = 0.0
                 penalty += context.bathy.depth_penalty(gny, gnx, min_depth, weights.near_shore_depth_penalty)
                 
+                # Add land proximity penalty
+                if context.land:
+                    penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=50)
+                
                 if context.tss:
+                    gcx = self.x_off + cx
+                    gcy = self.y_off + cy
                     penalty += context.tss.alignment_penalty(
                         gny, gnx, move_bearing,
                         weights.tss_wrong_way_penalty,
-                        weights.tss_alignment_weight
+                        weights.tss_alignment_weight,
+                        prev_y=gcy,
+                        prev_x=gcx
+                    )
+                    # Add boundary crossing penalties
+                    penalty += context.tss.boundary_crossing_penalty(
+                        gcy, gcx, gny, gnx,
+                        weights.tss_lane_crossing_penalty,
+                        weights.tss_sepzone_crossing_penalty,
+                        weights.tss_sepboundary_crossing_penalty
                     )
                 
                 if cur_bearing >= 0:
@@ -929,11 +1083,26 @@ class CoarseToFineAStar:
                 penalty = 0.0
                 penalty += context.bathy.depth_penalty(gny, gnx, min_depth, weights.near_shore_depth_penalty)
                 
+                # Add land proximity penalty
+                if context.land:
+                    penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=50)
+                
                 if context.tss:
+                    gcx = x_off + cx
+                    gcy = y_off + cy
                     penalty += context.tss.alignment_penalty(
                         gny, gnx, move_bearing,
                         weights.tss_wrong_way_penalty,
-                        weights.tss_alignment_weight
+                        weights.tss_alignment_weight,
+                        prev_y=gcy,
+                        prev_x=gcx
+                    )
+                    # Add boundary crossing penalties
+                    penalty += context.tss.boundary_crossing_penalty(
+                        gcy, gcx, gny, gnx,
+                        weights.tss_lane_crossing_penalty,
+                        weights.tss_sepzone_crossing_penalty,
+                        weights.tss_sepboundary_crossing_penalty
                     )
                 
                 if cur_bearing >= 0:
@@ -957,9 +1126,14 @@ class CoarseToFineAStar:
         path_xy: List[Tuple[int, int]],
         context: CostContext,
         min_depth: float,
-        max_skip: int = 100
+        max_skip: int = 100,
+        min_land_distance_cells: int = 5
     ) -> List[Tuple[int, int]]:
-        """Smooth path using line-of-sight checks (string pulling)."""
+        """Smooth path using line-of-sight checks (string pulling).
+        
+        Respects TSS boundaries - won't smooth across lane boundaries or into separation zones.
+        Also ensures smoothed path maintains safe distance from land (unless in TSS lanes).
+        """
         if len(path_xy) < 3:
             return path_xy
         
@@ -972,7 +1146,25 @@ class CoarseToFineAStar:
                 return True
             return False
         
-        return smooth_path_xy(path_xy, is_blocked, max_skip)
+        def line_is_valid(p0: Tuple[int, int], p1: Tuple[int, int]) -> bool:
+            """Check if line between two points is valid (no obstacles, no TSS boundary crossings, safe distance from land)."""
+            # First check standard line-of-sight (obstacles)
+            if not _line_of_sight_clear(p0, p1, is_blocked):
+                return False
+            # Check if line passes too close to land (TSS lanes are exempt)
+            if context.land is not None:
+                if _line_too_close_to_land(p0, p1, context.land.distance_from_land, min_land_distance_cells, context.tss):
+                    return False
+            # Only check separation zone/boundary crossings (not lane boundaries or wrong-way)
+            # A* already ensured the path follows correct TSS directions
+            if context.tss is not None:
+                x0, y0 = p0
+                x1, y1 = p1
+                if context.tss.line_crosses_boundary(y0, x0, y1, x1):
+                    return False
+            return True
+        
+        return _smooth_path_with_validator(path_xy, line_is_valid, max_skip)
 
 
 class FastCorridorAStar:
@@ -1049,10 +1241,29 @@ class FastCorridorAStar:
                     x, y = px, py
                 path_indices.reverse()
                 
-                # Smooth the path
+                # Smooth the path (TSS-aware and land-aware)
+                min_land_distance_cells = 5  # Minimum distance from land in grid cells (~5nm)
+                
                 def is_blocked(x: int, y: int) -> bool:
                     return context.blocked(y, x, min_depth)
-                smoothed = smooth_path_xy(path_indices, is_blocked)
+                
+                def line_is_valid(p0: Tuple[int, int], p1: Tuple[int, int]) -> bool:
+                    if not _line_of_sight_clear(p0, p1, is_blocked):
+                        return False
+                    # Check if line passes too close to land (TSS lanes are exempt)
+                    if context.land is not None:
+                        if _line_too_close_to_land(p0, p1, context.land.distance_from_land, min_land_distance_cells, context.tss):
+                            return False
+                    # Only check separation zone/boundary crossings
+                    # A* already ensured the path follows correct TSS directions
+                    if context.tss is not None:
+                        x0, y0 = p0
+                        x1, y1 = p1
+                        if context.tss.line_crosses_boundary(y0, x0, y1, x1):
+                            return False
+                    return True
+                
+                smoothed = _smooth_path_with_validator(path_indices, line_is_valid)
                 
                 lonlats = [self.grid.xy_to_lonlat(px, py) for px, py in smoothed]
                 return AStarResult(
@@ -1096,11 +1307,24 @@ class FastCorridorAStar:
                 penalty = 0.0
                 penalty += context.bathy.depth_penalty(gny, gnx, min_depth, weights.near_shore_depth_penalty)
                 
+                # Add land proximity penalty
+                if context.land:
+                    penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=50)
+                
                 if context.tss:
                     penalty += context.tss.alignment_penalty(
                         gny, gnx, move_bearing,
                         weights.tss_wrong_way_penalty,
-                        weights.tss_alignment_weight
+                        weights.tss_alignment_weight,
+                        prev_y=gy_cur,
+                        prev_x=gx_cur
+                    )
+                    # Add boundary crossing penalties
+                    penalty += context.tss.boundary_crossing_penalty(
+                        gy_cur, gx_cur, gny, gnx,
+                        weights.tss_lane_crossing_penalty,
+                        weights.tss_sepzone_crossing_penalty,
+                        weights.tss_sepboundary_crossing_penalty
                     )
                 
                 if cur_bearing >= 0:
