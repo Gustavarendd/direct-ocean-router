@@ -9,21 +9,23 @@ algorithm:
   # Which A* algorithm to use:
   # - "coarse_to_fine": For long routes (>coarse_to_fine_threshold_nm)
   # - "corridor": For shorter routes using FastCorridorAStar
-  default: "coarse_to_fine" # "auto" selects based on distance thresholds
+  default: "auto" # "auto" selects based on distance thresholds
 
   # Distance threshold (nm) - routes longer than this use coarse-to-fine A*
   coarse_to_fine_threshold_nm: 100
 
   # Scale factor for coarse grid in coarse-to-fine A*
   coarse_scale: 8
+  # Heuristic weight for A* (weighted A*). >1.0 trades optimality for speed.
+  heuristic_weight: 1.25
 
 # ----------------------------------------------------------------------
 # Corridor Settings
 # ----------------------------------------------------------------------
 corridor:
   # Width of the search corridor (nm)
-  width_short_nm: 50.0 # For routes up to long_route_threshold_nm
-  width_long_nm: 100.0 # For routes longer than long_route_threshold_nm
+  width_short_nm: 10.0 # For routes up to long_route_threshold_nm
+  width_long_nm: 10.0 # For routes longer than long_route_threshold_nm
 
   # Distance threshold to switch between short/long corridor widths
   long_route_threshold_nm: 1500.0
@@ -57,11 +59,11 @@ tss:
 land:
   # Minimum distance to maintain from land (nm)
   # Used for path simplification and safety margin
-  min_distance_nm: 2.0
+  min_distance_nm: 1.0
 
   # Penalty for being close to land (within ~20nm)
   proximity_penalty: 5.0
-  max_distance_cells: 10
+  max_distance_cells: 6
 
 depth:
   # Penalty for near-shore shallow water

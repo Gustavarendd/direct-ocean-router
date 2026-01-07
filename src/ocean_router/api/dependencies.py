@@ -5,11 +5,12 @@ import os
 import yaml
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from ocean_router.core.grid import GridSpec
 from ocean_router.core.config import get_config
 from ocean_router.data.bathy import Bathy, load_bathy
+from ocean_router.data.canals import Canal, load_canals
 from ocean_router.data.land import LandMask
 from ocean_router.data.tss import TSSFields
 from ocean_router.routing.costs import CostWeights
@@ -121,6 +122,13 @@ def get_tss() -> Optional[TSSFields]:
         sepzone_mask_path=sep_mask if sep_mask.exists() else None,
         sepboundary_mask_path=sep_boundary if sep_boundary.exists() else None,
     )
+
+
+@lru_cache(maxsize=1)
+def get_canals() -> List[Canal]:
+    """Load canal overrides from config (if present)."""
+    path = _project_root() / "configs" / "canals.yaml"
+    return load_canals(path)
 
 
 @lru_cache(maxsize=1)

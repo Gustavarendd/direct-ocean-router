@@ -24,6 +24,7 @@ src/ocean_router/core/memmaps.py
 src/ocean_router/data/__init__.py
 src/ocean_router/data/basins.py
 src/ocean_router/data/bathy.py
+src/ocean_router/data/canals.py
 src/ocean_router/data/density.py
 src/ocean_router/data/land.py
 src/ocean_router/data/passages.py

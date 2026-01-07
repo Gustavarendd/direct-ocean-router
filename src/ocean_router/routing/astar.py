@@ -7,7 +7,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from ocean_router.core.geodesy import bearing_deg, haversine_nm
+from ocean_router.core.geodesy import bearing_deg, rhumb_distance_nm
 from ocean_router.core.grid import GridSpec
 from ocean_router.routing.costs import CostContext, CostWeights
 from ocean_router.routing.reconstruct import reconstruct_path
@@ -55,6 +55,7 @@ class CorridorAStar:
         context: CostContext,
         weights: CostWeights,
         min_depth: float,
+        heuristic_weight: float = 1.0,
     ) -> AStarResult:
         start_x, start_y = self.grid.lonlat_to_xy(*start_lonlat)
         goal_x, goal_y = self.grid.lonlat_to_xy(*goal_lonlat)
@@ -70,7 +71,7 @@ class CorridorAStar:
 
         def heuristic(x: int, y: int) -> float:
             lon, lat = self.grid.xy_to_lonlat(x, y)
-            return haversine_nm(lon, lat, *goal_lonlat)
+            return rhumb_distance_nm(lon, lat, *goal_lonlat)
 
         while open_set:
             _, current = heapq.heappop(open_set)
@@ -101,6 +102,6 @@ class CorridorAStar:
                     came_from[neighbor] = current
                     g_score[neighbor] = tentative_g
                     prev_bearing[neighbor] = move_bearing
-                    f_score = tentative_g + heuristic(nx, ny)
+                    f_score = tentative_g + heuristic(nx, ny) * heuristic_weight
                     heapq.heappush(open_set, (f_score, neighbor))
         return AStarResult(path=[], explored=explored, cost=float("inf"), success=False)

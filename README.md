@@ -93,10 +93,10 @@ OCEAN_ROUTER_RESOLUTION=0.5nm uvicorn ocean_router.api.main:app --reload
 
 ## Data Sizes
 
-| Resolution | Grid Size | Land Mask | Bathymetry | TSS Fields | Total |
-|------------|-----------|-----------|------------|------------|-------|
-| 1nm | 21600×10800 | ~220 MB | ~445 MB | ~890 MB | ~2.7 GB |
-| 0.5nm | 43200×21600 | ~890 MB | ~1.8 GB | ~3.6 GB | ~10.8 GB |
+| Resolution | Grid Size   | Land Mask | Bathymetry | TSS Fields | Total    |
+| ---------- | ----------- | --------- | ---------- | ---------- | -------- |
+| 1nm        | 21600×10800 | ~220 MB   | ~445 MB    | ~890 MB    | ~2.7 GB  |
+| 0.5nm      | 43200×21600 | ~890 MB   | ~1.8 GB    | ~3.6 GB    | ~10.8 GB |
 
 ## Pipeline overview
 
@@ -130,6 +130,7 @@ python -m ocean_router.cli.main route --start "lat,lon" --end "lat,lon" --draft 
 ## Data expectations
 
 Place raw inputs under `data/raw/`:
+
 - `land_polygons.shp` – OSM land polygons (from osmdata.openstreetmap.de)
 - `gebco_2025_sub_ice_topo_geotiff/` – GEBCO bathymetry tiles
 - `separation_lanes_with_direction.geojson` – TSS lanes with flow bearings

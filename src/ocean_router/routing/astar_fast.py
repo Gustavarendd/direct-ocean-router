@@ -12,6 +12,7 @@ from scipy import ndimage
 
 from ocean_router.core.grid import GridSpec
 from ocean_router.routing.costs import CostContext, CostWeights
+from ocean_router.routing.corridor import precompute_corridor_arrays
 
 
 @dataclass
@@ -386,8 +387,9 @@ def _expand_coarse_path_to_corridor(
     h, w = corridor_mask.shape
     narrow = np.zeros((h, w), dtype=np.uint8)
     
-    # Mark cells near the coarse path
-    expansion = scale + margin
+    # Mark cells near the coarse path. Cap expansion relative to scale so
+    # extremely large scales do not create huge corridors.
+    expansion = max(2, scale // 4 + margin)
     for cx, cy in coarse_path:
         # Convert to fine coordinates
         y0 = max(0, cy - expansion)
@@ -424,6 +426,7 @@ class HierarchicalAStar:
         context: CostContext,
         weights: CostWeights,
         min_depth: float,
+        heuristic_weight: float = 1.0,
     ) -> AStarResult:
         start_x, start_y = self.grid.lonlat_to_xy(*start_lonlat)
         goal_x, goal_y = self.grid.lonlat_to_xy(*goal_lonlat)
@@ -455,14 +458,16 @@ class HierarchicalAStar:
             return AStarResult(path=[], explored=0, cost=float('inf'), success=False)
         
         # Build narrow corridor around coarse path
+        # Use a tighter expansion around the coarse path to keep the fine
+        # search corridor small for long-distance routes.
         narrow_corridor = _expand_coarse_path_to_corridor(
-            coarse_path, self.corridor_mask, self.coarse_scale, margin=4
+            coarse_path, self.corridor_mask, self.coarse_scale, margin=1
         )
         
         # Run fine-grained A* in the narrow corridor
         return self._fine_astar(
             narrow_corridor, (sx, sy), (gx, gy),
-            context, weights, min_depth, goal_lonlat
+            context, weights, min_depth, goal_lonlat, heuristic_weight=heuristic_weight
         )
     
     def _fine_astar(
@@ -473,7 +478,8 @@ class HierarchicalAStar:
         context: CostContext,
         weights: CostWeights,
         min_depth: float,
-        goal_lonlat: Tuple[float, float]
+        goal_lonlat: Tuple[float, float],
+        heuristic_weight: float = 1.0,
     ) -> AStarResult:
         """Fine-grained A* search in a narrow corridor."""
         h, w = corridor.shape
@@ -491,6 +497,12 @@ class HierarchicalAStar:
         
         # Heuristic: straight-line distance in NM (approximate)
         goal_lon, goal_lat = goal_lonlat
+
+        # Precompute grid-derived constants to avoid repeated work in inner loop
+        grid_dx_nm = context.grid_dx * 60.0
+        grid_dy_nm = context.grid_dy * 60.0
+        moves_base = MOVES_8[:, 2]
+        inv_sqrt2 = 1.0 / math.sqrt(2.0)
         
         def heuristic(x: int, y: int) -> float:
             gx = self.x_off + x
@@ -503,6 +515,15 @@ class HierarchicalAStar:
         
         open_set = [(heuristic(start[0], start[1]), start)]
         explored = 0
+
+        # Precompute blocked mask for corridor cells to avoid repeated context.blocked() calls
+        blocked_mask = np.zeros_like(corridor, dtype=np.bool_)
+        ys, xs = np.where(corridor)
+        for y, x in zip(ys, xs):
+            # convert to global coords for blocked check
+            gnx = self.x_off + x
+            gny = self.y_off + y
+            blocked_mask[y, x] = context.blocked(gny, gnx, min_depth)
         
         # Timing counters for profiling
         time_heappop = 0.0
@@ -510,7 +531,8 @@ class HierarchicalAStar:
         time_blocked_check = 0.0
         time_cost_calc = 0.0
         time_heappush = 0.0
-        sample_interval = 1000  # Report timing every N iterations
+        # Disable frequent timing prints in tight loops for performance
+        sample_interval = 10**9  # effectively never
         
         while open_set:
             t0 = time.perf_counter()
@@ -538,28 +560,52 @@ class HierarchicalAStar:
                 path_indices.reverse()
                 
                 # Smooth the path using line-of-sight (TSS-aware and land-aware)
-                min_land_distance_cells = 5  # Minimum distance from land in grid cells (~5nm)
-                
+                # Primary smoothing: conservative land clearance
+                min_land_distance_cells = 5
+
                 def is_blocked(x: int, y: int) -> bool:
                     return context.blocked(y, x, min_depth)
-                
+
                 def line_is_valid(p0: Tuple[int, int], p1: Tuple[int, int]) -> bool:
                     if not _line_of_sight_clear(p0, p1, is_blocked):
                         return False
-                    # Check if line passes too close to land (TSS lanes are exempt)
                     if context.land is not None:
                         if _line_too_close_to_land(p0, p1, context.land.distance_from_land, min_land_distance_cells, context.tss):
                             return False
-                    # Only check separation zone/boundary crossings
-                    # A* already ensured the path follows correct TSS directions
                     if context.tss is not None:
                         x0, y0 = p0
                         x1, y1 = p1
                         if context.tss.line_crosses_boundary(y0, x0, y1, x1):
                             return False
                     return True
-                
+
                 smoothed = _smooth_path_with_validator(path_indices, line_is_valid)
+
+                # Secondary (relaxed) smoothing: try again with reduced land clearance
+                # This helps remove grid-aligned stepping when the straight
+                # segment stays within TSS lanes or is otherwise acceptable.
+                relaxed_min_land = max(1, min_land_distance_cells // 2)
+
+                def line_is_valid_relaxed(p0: Tuple[int, int], p1: Tuple[int, int]) -> bool:
+                    if not _line_of_sight_clear(p0, p1, is_blocked):
+                        return False
+                    if context.land is not None:
+                        # Allow closer passes if the line is mostly within TSS lanes
+                        if _line_too_close_to_land(p0, p1, context.land.distance_from_land, relaxed_min_land, context.tss):
+                            return False
+                    if context.tss is not None:
+                        x0, y0 = p0
+                        x1, y1 = p1
+                        if context.tss.line_crosses_boundary(y0, x0, y1, x1):
+                            return False
+                    return True
+
+                # Attempt relaxed smoothing only if initial smoothing left many points
+                if len(smoothed) > max(10, len(path_indices) // 4):
+                    smoothed_relaxed = _smooth_path_with_validator(smoothed, line_is_valid_relaxed, max_skip=500)
+                    # Keep the shorter (fewer points) result if valid
+                    if len(smoothed_relaxed) < len(smoothed):
+                        smoothed = smoothed_relaxed
                 
                 lonlats = [self.grid.xy_to_lonlat(x, y) for x, y in smoothed]
                 return AStarResult(
@@ -576,9 +622,16 @@ class HierarchicalAStar:
             gx_cur = self.x_off + cx
             gy_cur = self.y_off + cy
             cur_lon, cur_lat = self.grid.xy_to_lonlat(gx_cur, gy_cur)
+
+            # Precompute lat factor and step distances for 8 moves
+            lat_factor = math.cos(math.radians(cur_lat))
+            # per-move step in NM for this latitude (array of 8)
+            # avoid repeated sqrt by multiplying base multipliers
+            base_step = math.hypot(grid_dx_nm * lat_factor, grid_dy_nm)
+            step_nms = (moves_base * base_step * inv_sqrt2).tolist()
             
             # Process each valid neighbor
-            for dx, dy, base_mult in MOVES_8:
+            for idx, (dx, dy, base_mult) in enumerate(MOVES_8):
                 dx, dy = int(dx), int(dy)
                 nx, ny = cx + dx, cy + dy
                 
@@ -595,8 +648,9 @@ class HierarchicalAStar:
                 gnx = self.x_off + nx
                 gny = self.y_off + ny
                 
+                # Use precomputed blocked mask
                 t0 = time.perf_counter()
-                if context.blocked(gny, gnx, min_depth):
+                if blocked_mask[ny, nx]:
                     time_blocked_check += time.perf_counter() - t0
                     continue
                 time_blocked_check += time.perf_counter() - t0
@@ -604,46 +658,27 @@ class HierarchicalAStar:
                 t0 = time.perf_counter()
                 # Calculate move bearing (approximate)
                 move_bearing = math.degrees(math.atan2(dx, -dy)) % 360
+
+                # Calculate cost (use precomputed value)
+                step_nm = step_nms[idx]
                 
-                # Calculate cost
-                lat_factor = math.cos(math.radians(cur_lat))
-                step_nm = base_mult * math.sqrt(
-                    (context.grid_dx * 60 * lat_factor)**2 + (context.grid_dy * 60)**2
-                ) / math.sqrt(2)  # Normalize
-                
-                # Simplified penalty calculation
+                # Simplified penalty calculation (use locals to avoid attribute lookups)
                 penalty = 0.0
                 penalty += context.bathy.depth_penalty(gny, gnx, min_depth, weights.near_shore_depth_penalty)
-                
-                # Add land proximity penalty
+
                 if context.land:
                     penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=weights.land_proximity_max_distance_cells)
-                
-                # Add TSS penalties (only if near a TSS lane)
+
                 if context.tss:
                     gcx = self.x_off + cx
                     gcy = self.y_off + cy
-                    # Only calculate goal_bearing if we're in/near a TSS lane
                     if context.tss.in_or_near_lane(gny, gnx):
                         goal_x_g, goal_y_g = self.x_off + goal[0], self.y_off + goal[1]
                         goal_bearing = math.degrees(math.atan2(goal_x_g - gnx, -(goal_y_g - gny))) % 360
                     else:
                         goal_bearing = None
-                    penalty += context.tss.alignment_penalty(
-                        gny, gnx, move_bearing,
-                        weights.tss_wrong_way_penalty,
-                        weights.tss_alignment_weight,
-                        prev_y=gcy,
-                        prev_x=gcx,
-                        goal_bearing=goal_bearing
-                    )
-                    # Add boundary crossing penalties
-                    penalty += context.tss.boundary_crossing_penalty(
-                        gcy, gcx, gny, gnx,
-                        weights.tss_lane_crossing_penalty,
-                        weights.tss_sepzone_crossing_penalty,
-                        weights.tss_sepboundary_crossing_penalty
-                    )
+                    penalty += context.tss.alignment_penalty(gny, gnx, move_bearing, weights.tss_wrong_way_penalty, weights.tss_alignment_weight, prev_y=gcy, prev_x=gcx, goal_bearing=goal_bearing)
+                    penalty += context.tss.boundary_crossing_penalty(gcy, gcx, gny, gnx, weights.tss_lane_crossing_penalty, weights.tss_sepzone_crossing_penalty, weights.tss_sepboundary_crossing_penalty)
                 
                 if cur_bearing >= 0:
                     angle_diff = abs(((move_bearing - cur_bearing + 180) % 360) - 180)
@@ -657,7 +692,7 @@ class HierarchicalAStar:
                     came_from_x[ny, nx] = cx
                     came_from_y[ny, nx] = cy
                     prev_bearing[ny, nx] = move_bearing
-                    f = tentative_g + heuristic(nx, ny)
+                    f = tentative_g + heuristic(nx, ny) * heuristic_weight
                     t0 = time.perf_counter()
                     heapq.heappush(open_set, (f, (nx, ny)))
                     time_heappush += time.perf_counter() - t0
@@ -673,7 +708,8 @@ def _build_global_coarse_mask(
     bathy_depth: np.ndarray,
     land_mask: Optional[np.ndarray],
     min_draft: float,
-    scale: int
+    scale: int,
+    override_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Build a coarse traversable mask for the entire grid.
     
@@ -698,7 +734,7 @@ def _build_global_coarse_mask(
     
     ch, cw = depth_padded.shape[0] // scale, depth_padded.shape[1] // scale
     cells_per_block = scale * scale
-    threshold = cells_per_block // 2  # Majority threshold
+    threshold = 1  # Just need at least 1 water cell
     
     # Reshape into blocks
     depth_blocks = depth_padded.reshape(ch, scale, cw, scale)
@@ -716,6 +752,9 @@ def _build_global_coarse_mask(
         coarse_mask = (coarse_depth_ok & coarse_not_land).astype(np.uint8)
     else:
         coarse_mask = coarse_depth_ok.astype(np.uint8)
+
+    if override_mask is not None and override_mask.shape == coarse_mask.shape:
+        coarse_mask |= override_mask.astype(np.uint8)
     
     return coarse_mask
 
@@ -934,18 +973,26 @@ class CoarseToFineAStar:
         grid: GridSpec,
         bathy_depth: np.ndarray,
         land_mask: Optional[np.ndarray] = None,
-        coarse_scale: int = 16,
-        corridor_width_nm: float = 50.0  # Width around coarse path for fine search
+        coarse_scale: int = 32,  # Reduced from 64 for better resolution
+        corridor_width_nm: float = 10.0,  # Reduced from 25.0 for narrower corridor
+        coarse_override: Optional[np.ndarray] = None,
+        canals: Optional[object] = None,
     ):
         self.grid = grid
         self.bathy_depth = bathy_depth
         self.land_mask = land_mask
         self.coarse_scale = coarse_scale
-        # Convert corridor width from NM to grid cells (1 cell ≈ 1 NM at equator)
-        self.corridor_width_cells = max(int(corridor_width_nm), coarse_scale * 2)
+        # Convert corridor width from NM to fine-grid cells using grid.dx
+        # (degrees -> NM conversion: 1 degree ≈ 60 NM)
+        cell_nm = max(self.grid.dx * 60.0, 1e-6)
+        computed_cells = int(round(corridor_width_nm / cell_nm))
+        # Ensure a minimum corridor size based on coarse scale
+        self.corridor_width_cells = max(computed_cells, coarse_scale * 2)
         
         # Pre-build coarse mask (one-time cost)
         self._coarse_mask = None
+        self._coarse_override = coarse_override
+        self._canals = canals
     
     @property
     def coarse_mask(self) -> np.ndarray:
@@ -954,7 +1001,8 @@ class CoarseToFineAStar:
                 self.bathy_depth,
                 self.land_mask,
                 min_draft=1.0,  # Use minimal draft for coarse - refine later
-                scale=self.coarse_scale
+                scale=self.coarse_scale,
+                override_mask=self._coarse_override,
             )
         return self._coarse_mask
     
@@ -965,6 +1013,7 @@ class CoarseToFineAStar:
         context: CostContext,
         weights: CostWeights,
         min_depth: float,
+        heuristic_weight: float = 1.0,
     ) -> AStarResult:
         start_x, start_y = self.grid.lonlat_to_xy(*start_lonlat)
         goal_x, goal_y = self.grid.lonlat_to_xy(*goal_lonlat)
@@ -986,36 +1035,63 @@ class CoarseToFineAStar:
         if coarse_path is None:
             return AStarResult(path=[], explored=0, cost=float('inf'), success=False)
         
-        # Phase 2: Build corridor around coarse path (don't subtract land here - fine A* will handle it)
-        corridor, x_off, y_off = _build_corridor_from_path(
-            coarse_path,
-            (self.grid.height, self.grid.width),
-            None,  # Don't subtract land from corridor - let fine A* blocked() handle it
-            self.corridor_width_cells
-        )
-        
-        # Convert start/goal to local corridor coords
-        sx, sy = start_x - x_off, start_y - y_off
-        gx, gy = goal_x - x_off, goal_y - y_off
-        
-        h, w = corridor.shape
-        
-        # Ensure start and goal are in corridor
-        if not (0 <= sy < h and 0 <= sx < w):
-            return AStarResult(path=[], explored=0, cost=float('inf'), success=False)
-        if not (0 <= gy < h and 0 <= gx < w):
-            return AStarResult(path=[], explored=0, cost=float('inf'), success=False)
-        
-        # Mark start and goal as traversable
-        corridor[sy, sx] = 1
-        corridor[gy, gx] = 1
-        
-        # Phase 3: Fine A* in narrow corridor
-        return self._fine_astar(
-            corridor, (sx, sy), (gx, gy),
-            x_off, y_off,
-            context, weights, min_depth, goal_lonlat
-        )
+        # Phase 2+: Run fine-grained A* segment-by-segment along the coarse path.
+        # This avoids building one huge bounding-box corridor that spans the
+        # entire route (which would make the fine search very large). Instead
+        # we route local segments between successive coarse waypoints and
+        # stitch the resulting local paths.
+        # Ensure the coarse path is augmented with actual start/end
+        aug_path = []
+        aug_path.append((start_x, start_y))
+        for p in coarse_path:
+            # coarse_path entries are (fine_x, fine_y)
+            aug_path.append(p)
+        aug_path.append((goal_x, goal_y))
+
+        full_lonlats: List[Tuple[float, float]] = []
+        total_explored = 0
+        total_cost = 0.0
+
+        for i in range(len(aug_path) - 1):
+            p0 = aug_path[i]
+            p1 = aug_path[i + 1]
+
+            # Build a small corridor around this segment only
+            segment_corridor, x_off, y_off = _build_corridor_from_path(
+                [p0, p1], (self.grid.height, self.grid.width), None, self.corridor_width_cells
+            )
+
+            sx_seg = p0[0] - x_off
+            sy_seg = p0[1] - y_off
+            gx_seg = p1[0] - x_off
+            gy_seg = p1[1] - y_off
+
+            h_seg, w_seg = segment_corridor.shape
+            if not (0 <= sy_seg < h_seg and 0 <= sx_seg < w_seg and 0 <= gy_seg < h_seg and 0 <= gx_seg < w_seg):
+                return AStarResult(path=[], explored=total_explored, cost=float('inf'), success=False)
+
+            # Ensure start/goal inside corridor
+            segment_corridor[sy_seg, sx_seg] = 1
+            segment_corridor[gy_seg, gx_seg] = 1
+
+            res = self._fine_astar(
+                segment_corridor, (sx_seg, sy_seg), (gx_seg, gy_seg),
+                x_off, y_off, context, weights, min_depth, goal_lonlat
+            )
+
+            total_explored += res.explored
+            total_cost += res.cost if res.success else 0.0
+
+            if not res.success:
+                return AStarResult(path=[], explored=total_explored, cost=float('inf'), success=False)
+
+            # Append segment path, avoid duplicating the first point except for first segment
+            if not full_lonlats:
+                full_lonlats.extend(res.path)
+            else:
+                full_lonlats.extend(res.path[1:])
+
+        return AStarResult(path=full_lonlats, explored=total_explored, cost=total_cost, success=True)
     
     def _fine_astar(
         self,
@@ -1053,6 +1129,26 @@ class CoarseToFineAStar:
         
         open_set = [(heuristic(sx, sy), (sx, sy))]
         explored = 0
+        override_mask = None
+        if self._canals:
+            from ocean_router.data.canals import canal_mask_window
+            override_mask = canal_mask_window(self._canals, self.grid, x_off, y_off, h, w)
+
+        pre = precompute_corridor_arrays(
+            corridor,
+            x_off,
+            y_off,
+            context=context,
+            min_draft=min_depth,
+            weights=weights,
+            override_mask=override_mask,
+        )
+        blocked_mask = pre.get("blocked_mask", np.zeros_like(corridor, dtype=bool))
+        depth_penalty = pre.get("depth_penalty")
+        land_prox_penalty = pre.get("land_prox_penalty")
+        tss_in_or_near = pre.get("tss_in_or_near")
+        goal_x_g = x_off + gx
+        goal_y_g = y_off + gy
         
         while open_set:
             _, (cx, cy) = heapq.heappop(open_set)
@@ -1089,8 +1185,16 @@ class CoarseToFineAStar:
             gx_cur = x_off + cx
             gy_cur = y_off + cy
             cur_lon, cur_lat = self.grid.xy_to_lonlat(gx_cur, gy_cur)
-            
-            for dx, dy, base_mult in MOVES_8:
+
+            # Precompute per-move step distances for this latitude
+            lat_factor = math.cos(math.radians(cur_lat))
+            grid_dx_nm = context.grid_dx * 60.0
+            grid_dy_nm = context.grid_dy * 60.0
+            moves_base = MOVES_8[:, 2]
+            base_step = math.hypot(grid_dx_nm * lat_factor, grid_dy_nm)
+            step_nms = (moves_base * base_step / math.sqrt(2.0)).tolist()
+
+            for idx, (dx, dy, base_mult) in enumerate(MOVES_8):
                 dx, dy = int(dx), int(dy)
                 nx, ny = cx + dx, cy + dy
                 
@@ -1106,44 +1210,51 @@ class CoarseToFineAStar:
                 
                 # Check land mask first (faster than blocked)
                 if self.land_mask is not None and self.land_mask[gny, gnx]:
-                    continue
-                
-                if context.blocked(gny, gnx, min_depth):
+                    if override_mask is None or not override_mask[ny, nx]:
+                        continue
+
+                # Use precomputed blocked mask
+                if blocked_mask[ny, nx]:
                     continue
                 
                 move_bearing = math.degrees(math.atan2(dx, -dy)) % 360
-                
-                lat_factor = math.cos(math.radians(cur_lat))
-                step_nm = base_mult * math.sqrt(
-                    (context.grid_dx * 60 * lat_factor)**2 + (context.grid_dy * 60)**2
-                ) / math.sqrt(2)
+                step_nm = step_nms[idx]
                 
                 penalty = 0.0
-                penalty += context.bathy.depth_penalty(gny, gnx, min_depth, weights.near_shore_depth_penalty)
+                if depth_penalty is not None:
+                    penalty += depth_penalty[ny, nx]
+                else:
+                    penalty += context.bathy.depth_penalty(gny, gnx, min_depth, weights.near_shore_depth_penalty)
                 
                 # Add land proximity penalty
-                if context.land:
-                    penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=weights.land_proximity_max_distance_cells)
+                if land_prox_penalty is not None:
+                    penalty += land_prox_penalty[ny, nx]
+                else:
+                    if context.land:
+                        penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=weights.land_proximity_max_distance_cells)
                 
                 # Add TSS penalties (only if near a TSS lane)
                 if context.tss:
                     gcx = x_off + cx
                     gcy = y_off + cy
-                    # Only calculate goal_bearing if we're in/near a TSS lane
-                    if context.tss.in_or_near_lane(gny, gnx):
-                        goal_x_g, goal_y_g = x_off + goal[0], y_off + goal[1]
-                        goal_bearing = math.degrees(math.atan2(goal_x_g - gnx, -(goal_y_g - gny))) % 360
+                    if tss_in_or_near is not None:
+                        in_near = bool(tss_in_or_near[ny, nx])
+                        prev_in_near = bool(tss_in_or_near[cy, cx])
                     else:
-                        goal_bearing = None
-                    penalty += context.tss.alignment_penalty(
-                        gny, gnx, move_bearing,
-                        weights.tss_wrong_way_penalty,
-                        weights.tss_alignment_weight,
-                        prev_y=gcy,
-                        prev_x=gcx,
-                        goal_bearing=goal_bearing
-                    )
-                    # Add boundary crossing penalties
+                        in_near = context.tss.in_or_near_lane(gny, gnx)
+                        prev_in_near = context.tss.in_or_near_lane(gcy, gcx)
+
+                    if in_near or prev_in_near:
+                        goal_bearing = math.degrees(math.atan2(goal_x_g - gnx, -(goal_y_g - gny))) % 360
+                        penalty += context.tss.alignment_penalty(
+                            gny, gnx, move_bearing,
+                            weights.tss_wrong_way_penalty,
+                            weights.tss_alignment_weight,
+                            prev_y=gcy,
+                            prev_x=gcx,
+                            goal_bearing=goal_bearing
+                        )
+                    # Always apply boundary crossing penalties to avoid cutting across separation lines.
                     penalty += context.tss.boundary_crossing_penalty(
                         gcy, gcx, gny, gnx,
                         weights.tss_lane_crossing_penalty,
@@ -1215,12 +1326,13 @@ class CoarseToFineAStar:
 
 class FastCorridorAStar:
     """Optimized single-level A* with NumPy arrays instead of dicts."""
-    
-    def __init__(self, grid: GridSpec, corridor_mask: np.ndarray, x_off: int, y_off: int):
+
+    def __init__(self, grid: GridSpec, corridor_mask: np.ndarray, x_off: int, y_off: int, precomputed: Optional[dict] = None):
         self.grid = grid
         self.corridor_mask = corridor_mask
         self.x_off = x_off
         self.y_off = y_off
+        self.precomputed = precomputed or {}
         
     def search(
         self,
@@ -1229,6 +1341,7 @@ class FastCorridorAStar:
         context: CostContext,
         weights: CostWeights,
         min_depth: float,
+        heuristic_weight: float = 1.0,
     ) -> AStarResult:
         start_x, start_y = self.grid.lonlat_to_xy(*start_lonlat)
         goal_x, goal_y = self.grid.lonlat_to_xy(*goal_lonlat)
@@ -1275,7 +1388,7 @@ class FastCorridorAStar:
         time_blocked_check = 0.0
         time_cost_calc = 0.0
         time_heappush = 0.0
-        sample_interval = 10000  # Report timing every N iterations
+        sample_interval = 10**9  # effectively disable periodic timing prints
         
         while open_set:
             t0 = time.perf_counter()
@@ -1341,7 +1454,15 @@ class FastCorridorAStar:
             gy_cur = self.y_off + cy
             cur_lon, cur_lat = self.grid.xy_to_lonlat(gx_cur, gy_cur)
             
-            for dx, dy, base_mult in MOVES_8:
+            # Precompute per-move step distances for this latitude
+            lat_factor = math.cos(math.radians(cur_lat))
+            grid_dx_nm = context.grid_dx * 60.0
+            grid_dy_nm = context.grid_dy * 60.0
+            moves_base = MOVES_8[:, 2]
+            base_step = math.hypot(grid_dx_nm * lat_factor, grid_dy_nm)
+            step_nms = (moves_base * base_step / math.sqrt(2.0)).tolist()
+
+            for idx, (dx, dy, base_mult) in enumerate(MOVES_8):
                 dx, dy = int(dx), int(dy)
                 nx, ny = cx + dx, cy + dy
                 
@@ -1358,42 +1479,62 @@ class FastCorridorAStar:
                 gny = self.y_off + ny
                 
                 t0 = time.perf_counter()
-                if context.blocked(gny, gnx, min_depth):
-                    time_blocked_check += time.perf_counter() - t0
-                    continue
+                # Use precomputed blocked mask if available
+                blocked_here = False
+                bm = self.precomputed.get('blocked_mask') if hasattr(self, 'precomputed') else None
+                if bm is not None and bm.size:
+                    if bm[ny, nx]:
+                        time_blocked_check += time.perf_counter() - t0
+                        continue
+                else:
+                    if context.blocked(gny, gnx, min_depth):
+                        time_blocked_check += time.perf_counter() - t0
+                        continue
                 time_blocked_check += time.perf_counter() - t0
                 
                 t0 = time.perf_counter()
                 move_bearing = math.degrees(math.atan2(dx, -dy)) % 360
-                
-                lat_factor = math.cos(math.radians(cur_lat))
-                step_nm = base_mult * math.sqrt(
-                    (context.grid_dx * 60 * lat_factor)**2 + (context.grid_dy * 60)**2
-                ) / math.sqrt(2)
+                step_nm = step_nms[idx]
                 
                 penalty = 0.0
-                penalty += context.bathy.depth_penalty(gny, gnx, min_depth, weights.near_shore_depth_penalty)
-                
-                # Add land proximity penalty
-                if context.land:
-                    penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=weights.land_proximity_max_distance_cells)
+                # Use precomputed depth/land penalties if available
+                dp = self.precomputed.get('depth_penalty') if hasattr(self, 'precomputed') else None
+                if dp is not None and dp.size:
+                    penalty += dp[ny, nx]
+                else:
+                    penalty += context.bathy.depth_penalty(gny, gnx, min_depth, weights.near_shore_depth_penalty)
+
+                lp = self.precomputed.get('land_prox_penalty') if hasattr(self, 'precomputed') else None
+                if lp is not None and lp.size:
+                    penalty += lp[ny, nx]
+                else:
+                    if context.land:
+                        penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=weights.land_proximity_max_distance_cells)
                 
                 # Add TSS penalties (only if near a TSS lane)
                 if context.tss:
-                    # Only calculate goal_bearing if we're in/near a TSS lane
-                    if context.tss.in_or_near_lane(gny, gnx):
-                        goal_bearing = math.degrees(math.atan2((gx + self.x_off) - gnx, -((gy + self.y_off) - gny))) % 360
+                    # Use precomputed flag to skip in_or_near checks when possible
+                    tin = self.precomputed.get('tss_in_or_near') if hasattr(self, 'precomputed') else None
+                    in_near = False
+                    prev_in_near = False
+                    if tin is not None and tin.size:
+                        in_near = bool(tin[ny, nx])
+                        prev_in_near = bool(tin[cy, cx])
                     else:
-                        goal_bearing = None
-                    penalty += context.tss.alignment_penalty(
-                        gny, gnx, move_bearing,
-                        weights.tss_wrong_way_penalty,
-                        weights.tss_alignment_weight,
-                        prev_y=gy_cur,
-                        prev_x=gx_cur,
-                        goal_bearing=goal_bearing
-                    )
-                    # Add boundary crossing penalties
+                        in_near = context.tss.in_or_near_lane(gny, gnx)
+                        prev_in_near = context.tss.in_or_near_lane(gy_cur, gx_cur)
+
+                    if in_near or prev_in_near:
+                        goal_bearing = math.degrees(math.atan2((gx + self.x_off) - gnx, -((gy + self.y_off) - gny))) % 360
+                        penalty += context.tss.alignment_penalty(
+                            gny, gnx, move_bearing,
+                            weights.tss_wrong_way_penalty,
+                            weights.tss_alignment_weight,
+                            prev_y=gy_cur,
+                            prev_x=gx_cur,
+                            goal_bearing=goal_bearing
+                        )
+                    # Always apply boundary crossing penalties to avoid cutting across separation lines.
                     penalty += context.tss.boundary_crossing_penalty(
                         gy_cur, gx_cur, gny, gnx,
                         weights.tss_lane_crossing_penalty,
@@ -1413,7 +1554,7 @@ class FastCorridorAStar:
                     came_from_x[ny, nx] = cx
                     came_from_y[ny, nx] = cy
                     prev_bearing[ny, nx] = move_bearing
-                    f = tentative_g + heuristic(nx, ny)
+                    f = tentative_g + heuristic(nx, ny) * heuristic_weight
                     t0 = time.perf_counter()
                     heapq.heappush(open_set, (f, (nx, ny)))
                     time_heappush += time.perf_counter() - t0

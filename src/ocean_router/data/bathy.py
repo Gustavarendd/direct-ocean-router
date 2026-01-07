@@ -5,9 +5,25 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
+
 import numpy as np
+import numba
 
 from ocean_router.core.memmaps import MemMapLoader
+
+
+@numba.jit
+def _depth_penalty_jit(depth: float, nodata: int, y: int, x: int, min_draft: float, near_threshold_penalty: float = 0.0) -> float:
+    """JIT-compiled helper for depth penalty calculation."""
+    if depth == nodata or depth > -min_draft:
+        return float("inf")
+    # Calculate slack (how much deeper than required)
+    water_depth = -depth  # Convert to positive depth
+    slack = max(water_depth - min_draft, 1e-3)
+    return near_threshold_penalty / slack
 
 
 @dataclass
@@ -48,12 +64,7 @@ class Bathy:
             near_threshold_penalty: Penalty weight for near-threshold depths
         """
         depth = float(self.depth[y, x])
-        if depth == self.nodata or depth > -min_draft:
-            return float("inf")
-        # Calculate slack (how much deeper than required)
-        water_depth = -depth  # Convert to positive depth
-        slack = max(water_depth - min_draft, 1e-3)
-        return near_threshold_penalty / slack
+        return _depth_penalty_jit(depth, self.nodata, y, x, min_draft, near_threshold_penalty)
 
 
 def load_bathy(path: str | Path, nodata: Optional[int] = None) -> Bathy:

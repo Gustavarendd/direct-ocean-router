@@ -8,7 +8,7 @@ from typing import Optional
 import typer
 
 from ocean_router.api.dependencies import get_grid_spec
-from ocean_router.core.geodesy import haversine_nm
+from ocean_router.core.geodesy import rhumb_distance_nm
 
 app = typer.Typer(help="Compute a route using preprocessed caches")
 
@@ -21,10 +21,10 @@ def great_circle(
 ) -> None:
     start_lon, start_lat = map(float, start.split(","))
     end_lon, end_lat = map(float, end.split(","))
-    distance = haversine_nm(start_lon, start_lat, end_lon, end_lat)
+    distance = rhumb_distance_nm(start_lon, start_lat, end_lon, end_lat)
     feature = {
         "type": "Feature",
-        "properties": {"distance_nm": distance, "note": "great-circle placeholder"},
+        "properties": {"distance_nm": distance, "note": "rhumb line placeholder"},
         "geometry": {
             "type": "LineString",
             "coordinates": [[start_lon, start_lat], [end_lon, end_lat]],

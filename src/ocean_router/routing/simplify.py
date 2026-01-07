@@ -738,7 +738,7 @@ def repair_tss_violations(
     if bypass_offsets_nm is None:
         bypass_offsets_nm = [5, 10, 15, 20, 30, 40, 50]
     
-    from ocean_router.core.geodesy import bearing_deg, angle_diff_deg, haversine_nm
+    from ocean_router.core.geodesy import bearing_deg, angle_diff_deg, rhumb_distance_nm
     
     repaired = [path[0]]
     num_repairs = 0
@@ -791,7 +791,7 @@ def _find_tss_bypass(
     Args:
         bypass_offsets_nm: List of offset distances to try (nm)
     """
-    from ocean_router.core.geodesy import bearing_deg, haversine_nm, angle_diff_deg
+    from ocean_router.core.geodesy import bearing_deg, rhumb_distance_nm, angle_diff_deg
     import math
     
     if bypass_offsets_nm is None:

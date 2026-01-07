@@ -10,13 +10,25 @@ NM_PER_METER = 1 / 1852
 
 
 def haversine_nm(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
-    """Return great-circle distance in nautical miles."""
-    lon1_r, lat1_r, lon2_r, lat2_r = map(math.radians, (lon1, lat1, lon2, lat2))
-    dlon = lon2_r - lon1_r
-    dlat = lat2_r - lat1_r
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1_r) * math.cos(lat2_r) * math.sin(dlon / 2) ** 2
-    c = 2 * math.asin(math.sqrt(a))
-    return EARTH_RADIUS_M * c * NM_PER_METER
+    """Legacy API: return a distance in nautical miles.
+
+    NOTE: Great-circle calculations are disabled for this project.
+    This function now delegates to `rhumb_distance_nm` to provide a
+    consistent, non-great-circle distance measure (rhumb/mercator-based).
+    """
+    return rhumb_distance_nm(lon1, lat1, lon2, lat2)
+
+
+def rhumb_distance_nm(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
+    """Return rhumb line distance in nautical miles."""
+    # Approximate rhumb distance
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    lat_avg = (lat1 + lat2) / 2
+    # Adjust longitude for convergence
+    dlon_adjusted = dlon * math.cos(math.radians(lat_avg))
+    distance = math.sqrt(dlat**2 + dlon_adjusted**2) * 60  # 1 degree ≈ 60 NM
+    return distance
 
 
 def bearing_deg(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -39,6 +51,31 @@ def wrap_lon(lon: float) -> float:
 
 def clamp_lat(lat: float) -> float:
     return max(min(lat, 90.0), -90.0)
+
+
+def mercator_to_latlon(x: float, y: float) -> Tuple[float, float]:
+    """Convert Mercator coordinates to lat/lon."""
+    lat = 2 * math.degrees(math.atan(math.exp(y / EARTH_RADIUS_M))) - 90
+    lon = math.degrees(x / EARTH_RADIUS_M)
+    return lon, lat
+
+
+def latlon_to_mercator(lon: float, lat: float) -> Tuple[float, float]:
+    """Convert lat/lon to Mercator coordinates."""
+    x = EARTH_RADIUS_M * math.radians(lon)
+    y = EARTH_RADIUS_M * math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
+    return x, y
+
+
+def rhumb_interpolate(lon1: float, lat1: float, lon2: float, lat2: float, fraction: float) -> Tuple[float, float]:
+    """Interpolate a point along the rhumb line from (lon1, lat1) to (lon2, lat2) at given fraction."""
+    x1, y1 = latlon_to_mercator(lon1, lat1)
+    x2, y2 = latlon_to_mercator(lon2, lat2)
+    
+    x = x1 + fraction * (x2 - x1)
+    y = y1 + fraction * (y2 - y1)
+    
+    return mercator_to_latlon(x, y)
 
 
 def move_cost_nm(dx_deg: float, dy_deg: float, lat: float) -> float:

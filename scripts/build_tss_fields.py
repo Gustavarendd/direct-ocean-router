@@ -22,7 +22,7 @@ from ocean_router.core.memmaps import save_memmap
 # seamark:type values for different TSS features
 TSS_LANE_TYPES = {"separation_lane"}
 TSS_ZONE_TYPES = {"separation_zone"}
-TSS_BOUNDARY_TYPES = {"separation_boundary", "separation_line"}
+TSS_BOUNDARY_TYPES = {"separation_boundary", "separation_line", "inshore_traffic_zone"}
 
 
 def load_geojson(path: Path) -> dict:

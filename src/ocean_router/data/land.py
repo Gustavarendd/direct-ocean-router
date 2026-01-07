@@ -7,8 +7,20 @@ from typing import Optional
 
 import numpy as np
 from scipy.ndimage import binary_dilation, distance_transform_edt
+import numba
 
 from ocean_router.core.memmaps import MemMapLoader
+
+
+@numba.jit
+def _proximity_penalty_jit(dist: float, penalty_weight: float, max_distance_cells: int) -> float:
+    """JIT-compiled helper for land proximity penalty calculation."""
+    if dist >= max_distance_cells:
+        return 0.0
+    # Penalty decreases linearly with distance
+    # At dist=0 (land edge): full penalty
+    # At dist=max_distance_cells: no penalty
+    return penalty_weight * (1.0 - dist / max_distance_cells)
 
 
 class LandMask:
@@ -89,12 +101,7 @@ class LandMask:
             Penalty that decreases with distance from land
         """
         dist = self.distance_from_land[y, x]
-        if dist >= max_distance_cells:
-            return 0.0
-        # Penalty decreases linearly with distance
-        # At dist=0 (land edge): full penalty
-        # At dist=max_distance_cells: no penalty
-        return penalty_weight * (1.0 - dist / max_distance_cells)
+        return _proximity_penalty_jit(dist, penalty_weight, max_distance_cells)
 
     def dilate(self, iterations: int = 1) -> np.ndarray:
         mask = self.base.astype(bool)

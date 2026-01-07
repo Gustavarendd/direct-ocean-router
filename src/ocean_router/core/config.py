@@ -12,14 +12,15 @@ class AlgorithmConfig:
     """Algorithm selection configuration."""
     default: str = "auto"
     coarse_to_fine_threshold_nm: float = 100.0
-    coarse_scale: int = 8
+    coarse_scale: int = 32
+    heuristic_weight: float = 1.25
 
 
 @dataclass
 class CorridorConfig:
     """Corridor settings configuration."""
-    width_short_nm: float = 100.0
-    width_long_nm: float = 100.0
+    width_short_nm: float = 10.0
+    width_long_nm: float = 10.0
     long_route_threshold_nm: float = 1500.0
     offshore_buffer_nm: float = 500.0
     chokepoint_buffer_nm: float = 50.0
@@ -41,9 +42,9 @@ class TSSConfig:
 @dataclass
 class LandConfig:
     """Land/coast configuration."""
-    min_distance_nm: float = 2.0
+    min_distance_nm: float = 1.0
     proximity_penalty: float = 5.0
-    max_distance_cells: int = 50  # Maximum distance to check for land proximity penalty
+    max_distance_cells: int = 6
 
 
 @dataclass
