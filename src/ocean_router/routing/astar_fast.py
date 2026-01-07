@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import heapq
 import math
+import time
 from dataclasses import dataclass
 from typing import List, Optional, Tuple, Callable
 
@@ -503,13 +504,28 @@ class HierarchicalAStar:
         open_set = [(heuristic(start[0], start[1]), start)]
         explored = 0
         
+        # Timing counters for profiling
+        time_heappop = 0.0
+        time_neighbor_gen = 0.0
+        time_blocked_check = 0.0
+        time_cost_calc = 0.0
+        time_heappush = 0.0
+        sample_interval = 1000  # Report timing every N iterations
+        
         while open_set:
+            t0 = time.perf_counter()
             _, (cx, cy) = heapq.heappop(open_set)
+            time_heappop += time.perf_counter() - t0
             
             if closed[cy, cx]:
                 continue
             closed[cy, cx] = 1
             explored += 1
+            
+            # Periodic timing report
+            if explored % sample_interval == 0:
+                total_time = time_heappop + time_neighbor_gen + time_blocked_check + time_cost_calc + time_heappush
+                print(f"[A* TIMING @ {explored} nodes] heappop={time_heappop*1000:.1f}ms, neighbor={time_neighbor_gen*1000:.1f}ms, blocked={time_blocked_check*1000:.1f}ms, cost={time_cost_calc*1000:.1f}ms, heappush={time_heappush*1000:.1f}ms, total={total_time*1000:.1f}ms")
             
             if (cx, cy) == goal:
                 # Reconstruct path
@@ -561,24 +577,31 @@ class HierarchicalAStar:
             gy_cur = self.y_off + cy
             cur_lon, cur_lat = self.grid.xy_to_lonlat(gx_cur, gy_cur)
             
+            # Process each valid neighbor
             for dx, dy, base_mult in MOVES_8:
                 dx, dy = int(dx), int(dy)
                 nx, ny = cx + dx, cy + dy
                 
+                t0 = time.perf_counter()
                 if not (0 <= ny < h and 0 <= nx < w):
                     continue
                 if closed[ny, nx]:
                     continue
                 if not corridor[ny, nx]:
                     continue
+                time_neighbor_gen += time.perf_counter() - t0
                 
                 # Convert to global coordinates for blocked check
                 gnx = self.x_off + nx
                 gny = self.y_off + ny
                 
+                t0 = time.perf_counter()
                 if context.blocked(gny, gnx, min_depth):
+                    time_blocked_check += time.perf_counter() - t0
                     continue
+                time_blocked_check += time.perf_counter() - t0
                 
+                t0 = time.perf_counter()
                 # Calculate move bearing (approximate)
                 move_bearing = math.degrees(math.atan2(dx, -dy)) % 360
                 
@@ -594,7 +617,7 @@ class HierarchicalAStar:
                 
                 # Add land proximity penalty
                 if context.land:
-                    penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=50)
+                    penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=weights.land_proximity_max_distance_cells)
                 
                 # Add TSS penalties (only if near a TSS lane)
                 if context.tss:
@@ -627,6 +650,7 @@ class HierarchicalAStar:
                     penalty += weights.turn_penalty_weight * angle_diff / 180
                 
                 tentative_g = cur_g + step_nm + penalty
+                time_cost_calc += time.perf_counter() - t0
                 
                 if tentative_g < g_score[ny, nx]:
                     g_score[ny, nx] = tentative_g
@@ -634,7 +658,13 @@ class HierarchicalAStar:
                     came_from_y[ny, nx] = cy
                     prev_bearing[ny, nx] = move_bearing
                     f = tentative_g + heuristic(nx, ny)
+                    t0 = time.perf_counter()
                     heapq.heappush(open_set, (f, (nx, ny)))
+                    time_heappush += time.perf_counter() - t0
+        
+        # Final timing report
+        total_time = time_heappop + time_neighbor_gen + time_blocked_check + time_cost_calc + time_heappush
+        print(f"[A* FINAL TIMING] explored={explored}, heappop={time_heappop*1000:.1f}ms, neighbor={time_neighbor_gen*1000:.1f}ms, blocked={time_blocked_check*1000:.1f}ms, cost={time_cost_calc*1000:.1f}ms, heappush={time_heappush*1000:.1f}ms, total={total_time*1000:.1f}ms")
         
         return AStarResult(path=[], explored=explored, cost=float('inf'), success=False)
 
@@ -1093,7 +1123,7 @@ class CoarseToFineAStar:
                 
                 # Add land proximity penalty
                 if context.land:
-                    penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=50)
+                    penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=weights.land_proximity_max_distance_cells)
                 
                 # Add TSS penalties (only if near a TSS lane)
                 if context.tss:
@@ -1239,13 +1269,28 @@ class FastCorridorAStar:
         open_set = [(heuristic(sx, sy), (sx, sy))]
         explored = 0
         
+        # Timing counters for profiling
+        time_heappop = 0.0
+        time_neighbor_gen = 0.0
+        time_blocked_check = 0.0
+        time_cost_calc = 0.0
+        time_heappush = 0.0
+        sample_interval = 10000  # Report timing every N iterations
+        
         while open_set:
+            t0 = time.perf_counter()
             _, (cx, cy) = heapq.heappop(open_set)
+            time_heappop += time.perf_counter() - t0
             
             if closed[cy, cx]:
                 continue
             closed[cy, cx] = 1
             explored += 1
+            
+            # Periodic timing report
+            if explored % sample_interval == 0:
+                total_time = time_heappop + time_neighbor_gen + time_blocked_check + time_cost_calc + time_heappush
+                print(f"[A* TIMING @ {explored} nodes] heappop={time_heappop*1000:.1f}ms, neighbor={time_neighbor_gen*1000:.1f}ms, blocked={time_blocked_check*1000:.1f}ms, cost={time_cost_calc*1000:.1f}ms, heappush={time_heappush*1000:.1f}ms, total={total_time*1000:.1f}ms")
             
             if (cx, cy) == (gx, gy):
                 # Reconstruct
@@ -1300,19 +1345,25 @@ class FastCorridorAStar:
                 dx, dy = int(dx), int(dy)
                 nx, ny = cx + dx, cy + dy
                 
+                t0 = time.perf_counter()
                 if not (0 <= ny < h and 0 <= nx < w):
                     continue
                 if closed[ny, nx]:
                     continue
                 if not self.corridor_mask[ny, nx]:
                     continue
+                time_neighbor_gen += time.perf_counter() - t0
                 
                 gnx = self.x_off + nx
                 gny = self.y_off + ny
                 
+                t0 = time.perf_counter()
                 if context.blocked(gny, gnx, min_depth):
+                    time_blocked_check += time.perf_counter() - t0
                     continue
+                time_blocked_check += time.perf_counter() - t0
                 
+                t0 = time.perf_counter()
                 move_bearing = math.degrees(math.atan2(dx, -dy)) % 360
                 
                 lat_factor = math.cos(math.radians(cur_lat))
@@ -1325,7 +1376,7 @@ class FastCorridorAStar:
                 
                 # Add land proximity penalty
                 if context.land:
-                    penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=50)
+                    penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=weights.land_proximity_max_distance_cells)
                 
                 # Add TSS penalties (only if near a TSS lane)
                 if context.tss:
@@ -1355,6 +1406,7 @@ class FastCorridorAStar:
                     penalty += weights.turn_penalty_weight * angle_diff / 180
                 
                 tentative_g = cur_g + step_nm + penalty
+                time_cost_calc += time.perf_counter() - t0
                 
                 if tentative_g < g_score[ny, nx]:
                     g_score[ny, nx] = tentative_g
@@ -1362,6 +1414,12 @@ class FastCorridorAStar:
                     came_from_y[ny, nx] = cy
                     prev_bearing[ny, nx] = move_bearing
                     f = tentative_g + heuristic(nx, ny)
+                    t0 = time.perf_counter()
                     heapq.heappush(open_set, (f, (nx, ny)))
+                    time_heappush += time.perf_counter() - t0
+        
+        # Final timing report
+        total_time = time_heappop + time_neighbor_gen + time_blocked_check + time_cost_calc + time_heappush
+        print(f"[A* FINAL TIMING] explored={explored}, heappop={time_heappop*1000:.1f}ms, neighbor={time_neighbor_gen*1000:.1f}ms, blocked={time_blocked_check*1000:.1f}ms, cost={time_cost_calc*1000:.1f}ms, heappush={time_heappush*1000:.1f}ms, total={total_time*1000:.1f}ms")
         
         return AStarResult(path=[], explored=explored, cost=float('inf'), success=False)

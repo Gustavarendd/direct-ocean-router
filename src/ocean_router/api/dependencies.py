@@ -135,4 +135,5 @@ def get_cost_weights() -> CostWeights:
         tss_sepboundary_crossing_penalty=cfg.tss.sepboundary_crossing_penalty,
         near_shore_depth_penalty=cfg.depth.near_shore_penalty,
         land_proximity_penalty=cfg.land.proximity_penalty,
+        land_proximity_max_distance_cells=cfg.land.max_distance_cells,
     )

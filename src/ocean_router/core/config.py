@@ -43,6 +43,7 @@ class LandConfig:
     """Land/coast configuration."""
     min_distance_nm: float = 2.0
     proximity_penalty: float = 5.0
+    max_distance_cells: int = 50  # Maximum distance to check for land proximity penalty
 
 
 @dataclass

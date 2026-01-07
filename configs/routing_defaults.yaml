@@ -22,7 +22,7 @@ algorithm:
 # ----------------------------------------------------------------------
 corridor:
   # Width of the search corridor (nm)
-  width_short_nm: 100.0 # For routes up to long_route_threshold_nm
+  width_short_nm: 50.0 # For routes up to long_route_threshold_nm
   width_long_nm: 100.0 # For routes longer than long_route_threshold_nm
 
   # Distance threshold to switch between short/long corridor widths
@@ -60,7 +60,8 @@ land:
   min_distance_nm: 2.0
 
   # Penalty for being close to land (within ~20nm)
-  proximity_penalty: 5.0
+  proximity_penalty: 0.0
+  max_distance_cells: 0
 
 depth:
   # Penalty for near-shore shallow water

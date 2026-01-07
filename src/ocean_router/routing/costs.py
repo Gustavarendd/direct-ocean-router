@@ -22,6 +22,7 @@ class CostWeights:
     tss_sepboundary_crossing_penalty: float = 5000.0  # Very high penalty for crossing boundary lines
     near_shore_depth_penalty: float = 5.0
     land_proximity_penalty: float = 100.0  # Strong penalty for being close to land
+    land_proximity_max_distance_cells: int = 50  # Max distance to check for land proximity
     density_bias: float = -2.0
     turn_penalty_weight: float = 0.5
 
