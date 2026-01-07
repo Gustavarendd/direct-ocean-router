@@ -9,10 +9,10 @@ algorithm:
   # Which A* algorithm to use:
   # - "coarse_to_fine": For long routes (>coarse_to_fine_threshold_nm)
   # - "corridor": For shorter routes using FastCorridorAStar
-  default: "auto" # "auto" selects based on distance thresholds
+  default: "coarse_to_fine" # "auto" selects based on distance thresholds
 
   # Distance threshold (nm) - routes longer than this use coarse-to-fine A*
-  coarse_to_fine_threshold_nm: 1500
+  coarse_to_fine_threshold_nm: 100
 
   # Scale factor for coarse grid in coarse-to-fine A*
   coarse_scale: 8
@@ -39,10 +39,10 @@ corridor:
 tss:
   # Penalties
   wrong_way_penalty: 1000.0 # Going wrong way in lane - very dangerous
-  alignment_weight: 0.5 # Bonus for following TSS lanes correctly (~10-20% preference)
-  lane_crossing_penalty: 1.5 # Small penalty for EXITING lanes
+  alignment_weight: 1.5 # Bonus for following TSS lanes correctly (~10-20% preference)
+  lane_crossing_penalty: 2.0 # Small penalty for EXITING lanes
   sepzone_crossing_penalty: 1000.0 # High penalty for separation zones
-  sepboundary_crossing_penalty: 10.0 # Penalty for crossing separation boundary lines
+  sepboundary_crossing_penalty: 500.0 # Penalty for crossing separation boundary lines
 
   # Proximity check - check wrong-way lanes within this radius (cells)
   # At 0.5nm resolution: 2 cells = ~1nm
@@ -61,7 +61,7 @@ land:
 
   # Penalty for being close to land (within ~20nm)
   proximity_penalty: 0.0
-  max_distance_cells: 0
+  max_distance_cells: 10
 
 depth:
   # Penalty for near-shore shallow water
