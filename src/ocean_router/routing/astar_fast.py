@@ -596,15 +596,23 @@ class HierarchicalAStar:
                 if context.land:
                     penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=50)
                 
+                # Add TSS penalties (only if near a TSS lane)
                 if context.tss:
                     gcx = self.x_off + cx
                     gcy = self.y_off + cy
+                    # Only calculate goal_bearing if we're in/near a TSS lane
+                    if context.tss.in_or_near_lane(gny, gnx):
+                        goal_x_g, goal_y_g = self.x_off + goal[0], self.y_off + goal[1]
+                        goal_bearing = math.degrees(math.atan2(goal_x_g - gnx, -(goal_y_g - gny))) % 360
+                    else:
+                        goal_bearing = None
                     penalty += context.tss.alignment_penalty(
                         gny, gnx, move_bearing,
                         weights.tss_wrong_way_penalty,
                         weights.tss_alignment_weight,
                         prev_y=gcy,
-                        prev_x=gcx
+                        prev_x=gcx,
+                        goal_bearing=goal_bearing
                     )
                     # Add boundary crossing penalties
                     penalty += context.tss.boundary_crossing_penalty(
@@ -1087,15 +1095,23 @@ class CoarseToFineAStar:
                 if context.land:
                     penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=50)
                 
+                # Add TSS penalties (only if near a TSS lane)
                 if context.tss:
                     gcx = x_off + cx
                     gcy = y_off + cy
+                    # Only calculate goal_bearing if we're in/near a TSS lane
+                    if context.tss.in_or_near_lane(gny, gnx):
+                        goal_x_g, goal_y_g = x_off + goal[0], y_off + goal[1]
+                        goal_bearing = math.degrees(math.atan2(goal_x_g - gnx, -(goal_y_g - gny))) % 360
+                    else:
+                        goal_bearing = None
                     penalty += context.tss.alignment_penalty(
                         gny, gnx, move_bearing,
                         weights.tss_wrong_way_penalty,
                         weights.tss_alignment_weight,
                         prev_y=gcy,
-                        prev_x=gcx
+                        prev_x=gcx,
+                        goal_bearing=goal_bearing
                     )
                     # Add boundary crossing penalties
                     penalty += context.tss.boundary_crossing_penalty(
@@ -1311,13 +1327,20 @@ class FastCorridorAStar:
                 if context.land:
                     penalty += context.land.proximity_penalty(gny, gnx, weights.land_proximity_penalty, max_distance_cells=50)
                 
+                # Add TSS penalties (only if near a TSS lane)
                 if context.tss:
+                    # Only calculate goal_bearing if we're in/near a TSS lane
+                    if context.tss.in_or_near_lane(gny, gnx):
+                        goal_bearing = math.degrees(math.atan2((gx + self.x_off) - gnx, -((gy + self.y_off) - gny))) % 360
+                    else:
+                        goal_bearing = None
                     penalty += context.tss.alignment_penalty(
                         gny, gnx, move_bearing,
                         weights.tss_wrong_way_penalty,
                         weights.tss_alignment_weight,
                         prev_y=gy_cur,
-                        prev_x=gx_cur
+                        prev_x=gx_cur,
+                        goal_bearing=goal_bearing
                     )
                     # Add boundary crossing penalties
                     penalty += context.tss.boundary_crossing_penalty(

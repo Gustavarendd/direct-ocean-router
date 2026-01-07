@@ -269,7 +269,8 @@ def smooth_path_los(
     path_xy: List[Tuple[int, int]],
     is_blocked: callable,
     max_skip: int = 50,
-    tss_fields: Optional['TSSFields'] = None
+    tss_fields: Optional['TSSFields'] = None,
+    grid: Optional['GridSpec'] = None
 ) -> List[Tuple[int, int]]:
     """Smooth a grid path using line-of-sight checks (string pulling).
     
@@ -281,6 +282,7 @@ def smooth_path_los(
         is_blocked: Function that takes (x, y) and returns True if blocked
         max_skip: Maximum number of points to try skipping at once
         tss_fields: Optional TSSFields for boundary crossing checks
+        grid: Optional GridSpec for accurate bearing calculation
         
     Returns:
         Smoothed path with fewer waypoints
@@ -296,6 +298,8 @@ def smooth_path_los(
             x0, y0 = p0
             x1, y1 = p1
             if tss_fields.line_crosses_boundary(y0, x0, y1, x1):
+                return False
+            if tss_fields.line_goes_wrong_way(y0, x0, y1, x1, grid=grid):
                 return False
         return True
     
@@ -369,6 +373,8 @@ def _is_clear_straight_path(
     A path is clear if it:
     - Doesn't cross land
     - Maintains minimum distance from land (unless inside TSS lanes)
+    - Doesn't cut across TSS separation zones/boundaries
+    - Stays inside a TSS lane when both endpoints are inside the same lane
     - Doesn't go against TSS traffic direction (if check_tss_direction=True)
     
     Args:
@@ -387,6 +393,23 @@ def _is_clear_straight_path(
     
     x0, y0 = grid.lonlat_to_xy(p0[0], p0[1])
     x1, y1 = grid.lonlat_to_xy(p1[0], p1[1])
+
+    # If TSS data is available, reject lines that cut across separation zones/boundaries
+    enforce_lane_continuity = False
+    if tss_fields is not None:
+        # Only enforce staying inside the lane when both endpoints are already in it
+        start_in_lane = tss_fields.in_lane(y0, x0)
+        end_in_lane = tss_fields.in_lane(y1, x1)
+        enforce_lane_continuity = start_in_lane and end_in_lane
+
+        # Reject if a direct segment crosses separation zones or boundary lines
+        if tss_fields.line_crosses_boundary(y0, x0, y1, x1):
+            return False
+
+        # Reject if any portion of the straight line would travel the wrong way through a lane
+        # Pass grid for accurate geodetic bearing calculation
+        if check_tss_direction and tss_fields.line_goes_wrong_way(y0, x0, y1, x1, grid=grid):
+            return False
     
     # Calculate the bearing of this simplified segment
     move_bearing = bearing_deg(p0[1], p0[0], p1[1], p1[0])
@@ -415,6 +438,10 @@ def _is_clear_straight_path(
                     pass  # OK - in shipping lane
                 else:
                     return False  # Too close to land
+                
+            # When simplifying between two lane points, ensure we don't leave the lane footprint
+            if enforce_lane_continuity and tss_fields is not None and not tss_fields.in_lane(y, x):
+                return False
             
             # Check TSS direction - reject if going wrong way
             if check_tss_direction and tss_fields is not None:
@@ -679,3 +706,285 @@ def smooth_path_spline(
         return list(zip(x_new, y_new))
     except ImportError:
         return points
+
+
+def repair_tss_violations(
+    path: List[Tuple[float, float]],
+    grid: 'GridSpec',
+    tss_fields: Optional['TSSFields'],
+    land_mask: Optional['LandMask'],
+    min_land_distance_cells: int = 3,
+    bypass_offsets_nm: Optional[List[float]] = None
+) -> Tuple[List[Tuple[float, float]], int]:
+    """Repair TSS violations in a path by inserting intermediate waypoints.
+    
+    When a segment goes wrong-way through a TSS, this function tries to find
+    an alternative path by inserting waypoints that go around the TSS.
+    
+    Args:
+        path: List of (lon, lat) waypoints
+        grid: GridSpec for coordinate conversion
+        tss_fields: TSS fields for lane detection
+        land_mask: Land mask for clearance checking
+        min_land_distance_cells: Minimum distance from land
+        bypass_offsets_nm: List of offset distances to try (nm), default [5,10,15,20,30,40,50]
+        
+    Returns:
+        (repaired_path, num_repairs) - repaired path and count of repairs made
+    """
+    if not path or len(path) < 2 or tss_fields is None:
+        return path, 0
+    
+    if bypass_offsets_nm is None:
+        bypass_offsets_nm = [5, 10, 15, 20, 30, 40, 50]
+    
+    from ocean_router.core.geodesy import bearing_deg, angle_diff_deg, haversine_nm
+    
+    repaired = [path[0]]
+    num_repairs = 0
+    
+    for i in range(len(path) - 1):
+        p0 = path[i]
+        p1 = path[i + 1]
+        
+        x0, y0 = grid.lonlat_to_xy(p0[0], p0[1])
+        x1, y1 = grid.lonlat_to_xy(p1[0], p1[1])
+        
+        # Check if this segment goes wrong-way in a TSS
+        if tss_fields.line_goes_wrong_way(y0, x0, y1, x1, grid=grid):
+            # Find where the violation occurs and try to route around
+            alternative = _find_tss_bypass(
+                p0, p1, grid, tss_fields, land_mask, min_land_distance_cells,
+                bypass_offsets_nm=bypass_offsets_nm
+            )
+            
+            if alternative and len(alternative) > 2:
+                # Found an alternative - add intermediate waypoints
+                repaired.extend(alternative[1:-1])  # Exclude start (already added) and end
+                num_repairs += 1
+                print(f"[TSS REPAIR] Segment {i}->{i+1}: Inserted {len(alternative) - 2} waypoints to avoid wrong-way TSS")
+            else:
+                print(f"[TSS REPAIR] Segment {i}->{i+1}: Could not find bypass, keeping original")
+        
+        repaired.append(p1)
+    
+    return repaired, num_repairs
+
+
+def _find_tss_bypass(
+    p0: Tuple[float, float],
+    p1: Tuple[float, float],
+    grid: 'GridSpec',
+    tss_fields: 'TSSFields',
+    land_mask: Optional['LandMask'],
+    min_land_distance_cells: int,
+    bypass_offsets_nm: Optional[List[float]] = None
+) -> Optional[List[Tuple[float, float]]]:
+    """Find an alternative path that bypasses wrong-way TSS lanes.
+    
+    Strategy:
+    1. Find all wrong-way TSS violations along the segment
+    2. For each violation cluster, determine the TSS lane direction
+    3. Place waypoints to route around the lane (perpendicular to lane direction)
+    4. Verify the new segments don't have violations
+    
+    Args:
+        bypass_offsets_nm: List of offset distances to try (nm)
+    """
+    from ocean_router.core.geodesy import bearing_deg, haversine_nm, angle_diff_deg
+    import math
+    
+    if bypass_offsets_nm is None:
+        bypass_offsets_nm = [5, 10, 15, 20, 30, 40, 50]
+    
+    x0, y0 = grid.lonlat_to_xy(p0[0], p0[1])
+    x1, y1 = grid.lonlat_to_xy(p1[0], p1[1])
+    
+    # Find where the wrong-way violations are
+    route_bearing = bearing_deg(p0[0], p0[1], p1[0], p1[1])
+    violations = []
+    
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx - dy
+    
+    x, y = x0, y0
+    
+    while True:
+        if 0 <= y < tss_fields.lane_mask.shape[0] and 0 <= x < tss_fields.lane_mask.shape[1]:
+            if bool(tss_fields.lane_mask[y, x]):
+                preferred = float(tss_fields.direction_field[y, x])
+                angle = angle_diff_deg(route_bearing, preferred)
+                if angle > 90:
+                    lon, lat = grid.xy_to_lonlat(x, y)
+                    violations.append((lon, lat, preferred, x, y))
+        
+        if x == x1 and y == y1:
+            break
+        
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x += sx
+        if e2 < dx:
+            err += dx
+            y += sy
+    
+    if not violations:
+        return None
+    
+    # Group violations into clusters (connected regions)
+    # For now, treat all violations as one cluster
+    avg_lon = sum(v[0] for v in violations) / len(violations)
+    avg_lat = sum(v[1] for v in violations) / len(violations)
+    tss_direction = violations[0][2]  # Direction the TSS lane is going
+    
+    # To bypass a TSS lane going direction D, we need to go perpendicular to D
+    # If lane goes NE (74°), we should route either NW or SE of it
+    # Choose the side that's more aligned with our overall route direction
+    
+    # Calculate which side of the TSS to bypass
+    # The TSS lane direction is tss_direction (e.g., 74° = NE)
+    # Our route is going route_bearing (e.g., 254° = SW)
+    # 
+    # The TSS lane has two sides: tss_direction + 90° and tss_direction - 90°
+    # We want to pick the side that keeps us moving in our route direction
+    
+    side1 = (tss_direction + 90) % 360  # One side of the TSS
+    side2 = (tss_direction - 90) % 360  # Other side
+    
+    # Pick the side that's closer to our route bearing
+    diff1 = angle_diff_deg(route_bearing, side1)
+    diff2 = angle_diff_deg(route_bearing, side2)
+    
+    # We want to offset perpendicular to the TSS, toward the side we're heading
+    if diff1 < diff2:
+        bypass_direction = side1
+    else:
+        bypass_direction = side2
+    
+    print(f"[TSS BYPASS] TSS lane dir={tss_direction:.0f}°, route={route_bearing:.0f}°, bypass dir={bypass_direction:.0f}°")
+    
+    # Try different offset distances
+    for offset_nm in bypass_offsets_nm:
+        # Calculate offset point perpendicular to TSS lane direction
+        offset_lat = avg_lat + (offset_nm / 60) * math.cos(math.radians(bypass_direction))
+        offset_lon = avg_lon + (offset_nm / 60) * math.sin(math.radians(bypass_direction)) / math.cos(math.radians(avg_lat))
+        
+        # Check if this creates a valid bypass
+        x0_check, y0_check = grid.lonlat_to_xy(p0[0], p0[1])
+        x_off, y_off = grid.lonlat_to_xy(offset_lon, offset_lat)
+        x1_check, y1_check = grid.lonlat_to_xy(p1[0], p1[1])
+        
+        # Check bounds
+        if not (0 <= y_off < tss_fields.lane_mask.shape[0] and 0 <= x_off < tss_fields.lane_mask.shape[1]):
+            continue
+        
+        # Check if offset point is on land
+        if land_mask is not None and land_mask.base[y_off, x_off]:
+            continue
+        
+        # Check if offset point is in a separation zone (not allowed)
+        if tss_fields.in_sepzone(y_off, x_off):
+            continue
+        
+        # If offset point is in a TSS lane, check if it's the right direction
+        if tss_fields.in_lane(y_off, x_off):
+            lane_dir = float(tss_fields.direction_field[y_off, x_off])
+            # Check if this lane is compatible with our route
+            if angle_diff_deg(route_bearing, lane_dir) > 90:
+                continue  # Wrong-way lane, skip
+        
+        # Check if first segment is OK (no wrong-way violations)
+        if tss_fields.line_goes_wrong_way(y0_check, x0_check, y_off, x_off, grid=grid):
+            continue
+        
+        # Check if second segment is OK
+        if tss_fields.line_goes_wrong_way(y_off, x_off, y1_check, x1_check, grid=grid):
+            continue
+        
+        # Check if segments cross separation zones
+        if tss_fields.line_crosses_boundary(y0_check, x0_check, y_off, x_off):
+            continue
+        if tss_fields.line_crosses_boundary(y_off, x_off, y1_check, x1_check):
+            continue
+        
+        # Check land clearance for both segments
+        if land_mask is not None:
+            if _line_too_close_to_land(p0, (offset_lon, offset_lat), grid, land_mask, min_land_distance_cells, tss_fields):
+                continue
+            if _line_too_close_to_land((offset_lon, offset_lat), p1, grid, land_mask, min_land_distance_cells, tss_fields):
+                continue
+        
+        # Found a valid bypass!
+        print(f"[TSS BYPASS] Found bypass at offset={offset_nm}nm: ({offset_lat:.4f}, {offset_lon:.4f})")
+        return [p0, (offset_lon, offset_lat), p1]
+    
+    # If single waypoint doesn't work, try two waypoints (before and after TSS)
+    print("[TSS BYPASS] Single waypoint failed, trying two waypoints...")
+    
+    # Find the entry and exit points of the wrong-way TSS
+    first_violation = violations[0]
+    last_violation = violations[-1]
+    
+    # Place waypoints just before and after the TSS, offset to the bypass side
+    for offset_nm in [5, 10, 15, 20, 30]:
+        # Calculate points before and after the TSS region
+        # "Before" = closer to p0, "After" = closer to p1
+        before_lon, before_lat = first_violation[0], first_violation[1]
+        after_lon, after_lat = last_violation[0], last_violation[1]
+        
+        # Offset both points perpendicular to the TSS
+        wp1_lat = before_lat + (offset_nm / 60) * math.cos(math.radians(bypass_direction))
+        wp1_lon = before_lon + (offset_nm / 60) * math.sin(math.radians(bypass_direction)) / math.cos(math.radians(before_lat))
+        
+        wp2_lat = after_lat + (offset_nm / 60) * math.cos(math.radians(bypass_direction))
+        wp2_lon = after_lon + (offset_nm / 60) * math.sin(math.radians(bypass_direction)) / math.cos(math.radians(after_lat))
+        
+        waypoints = [p0, (wp1_lon, wp1_lat), (wp2_lon, wp2_lat), p1]
+        
+        # Validate all segments
+        valid = True
+        for k in range(len(waypoints) - 1):
+            wp_a = waypoints[k]
+            wp_b = waypoints[k + 1]
+            xa, ya = grid.lonlat_to_xy(wp_a[0], wp_a[1])
+            xb, yb = grid.lonlat_to_xy(wp_b[0], wp_b[1])
+            
+            # Check bounds
+            if not (0 <= ya < tss_fields.lane_mask.shape[0] and 0 <= xa < tss_fields.lane_mask.shape[1]):
+                valid = False
+                break
+            if not (0 <= yb < tss_fields.lane_mask.shape[0] and 0 <= xb < tss_fields.lane_mask.shape[1]):
+                valid = False
+                break
+            
+            # Check land
+            if land_mask is not None:
+                if land_mask.base[ya, xa] or land_mask.base[yb, xb]:
+                    valid = False
+                    break
+            
+            # Check separation zones
+            if tss_fields.in_sepzone(ya, xa) or tss_fields.in_sepzone(yb, xb):
+                valid = False
+                break
+            
+            # Check wrong-way
+            if tss_fields.line_goes_wrong_way(ya, xa, yb, xb, grid=grid):
+                valid = False
+                break
+            
+            # Check boundary crossings
+            if tss_fields.line_crosses_boundary(ya, xa, yb, xb):
+                valid = False
+                break
+        
+        if valid:
+            print(f"[TSS BYPASS] Found 2-waypoint bypass at offset={offset_nm}nm")
+            return waypoints
+    
+    print("[TSS BYPASS] Could not find valid bypass")
+    return None

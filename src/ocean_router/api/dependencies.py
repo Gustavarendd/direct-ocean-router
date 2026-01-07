@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from ocean_router.core.grid import GridSpec
+from ocean_router.core.config import get_config
 from ocean_router.data.bathy import Bathy, load_bathy
 from ocean_router.data.land import LandMask
 from ocean_router.data.tss import TSSFields
@@ -124,12 +125,14 @@ def get_tss() -> Optional[TSSFields]:
 
 @lru_cache(maxsize=1)
 def get_cost_weights() -> CostWeights:
-    """Load cost weights from routing_defaults.yaml."""
-    cfg_path = _project_root() / "configs" / "routing_defaults.yaml"
-    if cfg_path.exists():
-        with open(cfg_path) as f:
-            config = yaml.safe_load(f)
-            # Config values are under 'routing' key
-            routing_config = config.get("routing", {})
-            return CostWeights.from_config(routing_config)
-    return CostWeights()
+    """Load cost weights from routing_defaults.yaml using config module."""
+    cfg = get_config()
+    return CostWeights(
+        tss_wrong_way_penalty=cfg.tss.wrong_way_penalty,
+        tss_alignment_weight=cfg.tss.alignment_weight,
+        tss_lane_crossing_penalty=cfg.tss.lane_crossing_penalty,
+        tss_sepzone_crossing_penalty=cfg.tss.sepzone_crossing_penalty,
+        tss_sepboundary_crossing_penalty=cfg.tss.sepboundary_crossing_penalty,
+        near_shore_depth_penalty=cfg.depth.near_shore_penalty,
+        land_proximity_penalty=cfg.land.proximity_penalty,
+    )

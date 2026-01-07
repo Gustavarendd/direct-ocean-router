@@ -85,7 +85,7 @@ class CostContext:
                 prev_y=prev_y, 
                 prev_x=prev_x,
                 goal_bearing=self.goal_bearing,
-                max_lane_deviation_deg=100.0
+                max_lane_deviation_deg=45.0
             )
             # Add boundary crossing penalties
             if prev_y is not None and prev_x is not None:

@@ -220,7 +220,7 @@ def main() -> None:
         # Buffer lines to create continuous lane areas
         # Use same physical buffer (1.5nm) regardless of resolution
         # This ensures lanes are wide enough for simplification to work
-        buffer_nm = 0.75
+        buffer_nm = 0.50
         if geom.geom_type in ("LineString", "MultiLineString"):
             buffered = geom.buffer(buffer_nm / 60)  # Convert nm to degrees
             lane_shapes.append((buffered, 1))
@@ -235,7 +235,15 @@ def main() -> None:
     zone_shapes = []
     for feat in zone_features:
         geom = shape(feat["geometry"])
-        zone_shapes.append((geom, 1))
+        buffer_nm = 0.5
+        if geom.geom_type in ("LineString", "MultiLineString"):
+            # if start/end are same, make polygon
+            if isinstance(geom, LineString) and geom.is_ring:
+                geom = Polygon(geom)
+            buffered = geom.buffer(buffer_nm / 60)  # Convert nm to degrees
+            zone_shapes.append((buffered, 1))
+        else:
+            zone_shapes.append((geom, 1))
     
     sep_mask = rasterize_mask(zone_shapes, grid, args.outdir / f"tss_sepzone_mask_{suffix}.npy")
     print(f"  Separation zone mask: {np.sum(sep_mask > 0)} cells")
@@ -270,21 +278,34 @@ def main() -> None:
     # 3. Remove separation zones from boundary mask (zones have their own mask)
     print("Cleaning up layer overlaps...")
     
-    if np.any(sep_mask):
-        lane_mask[sep_mask.astype(bool)] = 0
-        print(f"  Removed separation zones from lanes: {np.sum(lane_mask > 0)} lane cells remaining")
+    # if np.any(sep_mask):
+    #     lane_mask[sep_mask.astype(bool)] = 0
+    #     print(f"  Removed separation zones from lanes: {np.sum(lane_mask > 0)} lane cells remaining")
     
-    if np.any(lane_mask):
-        boundary_mask[lane_mask.astype(bool)] = 0
-        print(f"  Removed lanes from boundaries: {np.sum(boundary_mask > 0)} boundary cells remaining")
+    # if np.any(lane_mask):
+    #     boundary_mask[lane_mask.astype(bool)] = 0
+    #     sep_mask[lane_mask.astype(bool)] = 0
+    #     print(f"  Removed lanes from boundaries: {np.sum(boundary_mask > 0)} boundary cells remaining")
     
-    if np.any(sep_mask):
-        boundary_mask[sep_mask.astype(bool)] = 0
-        print(f"  Removed sep zones from boundaries: {np.sum(boundary_mask > 0)} boundary cells remaining")
+    # if np.any(sep_mask):
+    #     boundary_mask[sep_mask.astype(bool)] = 0
+    #     print(f"  Removed sep zones from boundaries: {np.sum(boundary_mask > 0)} boundary cells remaining")
+
+    lane_bool = lane_mask.astype(bool)
+
+    # Lanes are sacred — nothing touches them
+    sep_mask[lane_bool] = 0
+    boundary_mask[lane_bool] = 0
+
+    # Optional: separation zones override boundaries
+    sep_bool = sep_mask.astype(bool)
+    boundary_mask[sep_bool] = 0
     
     # Save cleaned masks
     save_memmap(args.outdir / f"tss_lane_mask_{suffix}.npy", lane_mask, dtype=np.uint8)
+    save_memmap(args.outdir / f"tss_sepzone_mask_{suffix}.npy", sep_mask, dtype=np.uint8)
     save_memmap(args.outdir / f"tss_sepboundary_mask_{suffix}.npy", boundary_mask, dtype=np.uint8)
+
 
     print("Done!")
 

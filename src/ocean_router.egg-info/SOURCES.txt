@@ -16,6 +16,7 @@ src/ocean_router/cli/main.py
 src/ocean_router/cli/preprocess_cmd.py
 src/ocean_router/cli/route_cmd.py
 src/ocean_router/core/__init__.py
+src/ocean_router/core/config.py
 src/ocean_router/core/geodesy.py
 src/ocean_router/core/grid.py
 src/ocean_router/core/logging.py

@@ -1,15 +1,101 @@
+# ======================================================================
+# Ocean Router Configuration
+# ======================================================================
+
+# ----------------------------------------------------------------------
+# Algorithm Selection
+# ----------------------------------------------------------------------
+algorithm:
+  # Which A* algorithm to use:
+  # - "coarse_to_fine": For long routes (>coarse_to_fine_threshold_nm)
+  # - "corridor": For shorter routes using FastCorridorAStar
+  default: "auto" # "auto" selects based on distance thresholds
+
+  # Distance threshold (nm) - routes longer than this use coarse-to-fine A*
+  coarse_to_fine_threshold_nm: 1500
+
+  # Scale factor for coarse grid in coarse-to-fine A*
+  coarse_scale: 8
+
+# ----------------------------------------------------------------------
+# Corridor Settings
+# ----------------------------------------------------------------------
 corridor:
+  # Width of the search corridor (nm)
+  width_short_nm: 100.0 # For routes up to long_route_threshold_nm
+  width_long_nm: 100.0 # For routes longer than long_route_threshold_nm
+
+  # Distance threshold to switch between short/long corridor widths
+  long_route_threshold_nm: 1500.0
+
+  # Corridor generation settings (for offshore buffer, etc.)
   offshore_buffer_nm: 500
   chokepoint_buffer_nm: 50
   min_width_nm: 25
+
+# ----------------------------------------------------------------------
+# TSS (Traffic Separation Scheme) Settings
+# ----------------------------------------------------------------------
+tss:
+  # Penalties
+  wrong_way_penalty: 1000.0 # Going wrong way in lane - very dangerous
+  alignment_weight: 0.5 # Bonus for following TSS lanes correctly (~10-20% preference)
+  lane_crossing_penalty: 1.5 # Small penalty for EXITING lanes
+  sepzone_crossing_penalty: 1000.0 # High penalty for separation zones
+  sepboundary_crossing_penalty: 10.0 # Penalty for crossing separation boundary lines
+
+  # Proximity check - check wrong-way lanes within this radius (cells)
+  # At 0.5nm resolution: 2 cells = ~1nm
+  proximity_check_radius: 2
+
+  # Maximum lane-to-goal angle deviation before applying penalty
+  max_lane_deviation_deg: 90.0
+
+# ----------------------------------------------------------------------
+# Land & Depth Settings
+# ----------------------------------------------------------------------
+land:
+  # Minimum distance to maintain from land (nm)
+  # Used for path simplification and safety margin
+  min_distance_nm: 2.0
+
+  # Penalty for being close to land (within ~20nm)
+  proximity_penalty: 5.0
+
+depth:
+  # Penalty for near-shore shallow water
+  near_shore_penalty: 5.0
+
+# ----------------------------------------------------------------------
+# Path Simplification Settings
+# ----------------------------------------------------------------------
+simplify:
+  # Tolerance for removing intermediate points (nm)
+  tolerance_nm: 0.5
+
+  # Maximum distance to simplify over (prevents skipping islands)
+  max_simplify_nm: 100.0
+
+  # Maximum number of points to try skipping at once
+  max_skip: 50
+
+  # Minimum land distance for simplified paths (cells)
+  # Lower values allow tighter routes near land
+  min_land_distance_cells_default: 10 # For general simplification
+  min_land_distance_cells_tss: 3 # For TSS-aware simplification
+
+# ----------------------------------------------------------------------
+# TSS Bypass Settings
+# ----------------------------------------------------------------------
+bypass:
+  # Offset distances to try when finding bypass around wrong-way TSS (nm)
+  # Tries each distance in order until a valid bypass is found
+  offset_distances_nm: [5, 10, 15, 20, 30, 40, 50]
+
+# ----------------------------------------------------------------------
+# General Routing Settings
+# ----------------------------------------------------------------------
 routing:
   allow_diagonals: true
-  max_turn_deg: 120
-  tss_wrong_way_penalty: 1000.0 # Going wrong way in lane - very dangerous, huge penalty
-  tss_alignment_weight: 1.0 # Modest bonus for following TSS lanes correctly - prefer TSS for small detours (~10-20%)
-  tss_lane_crossing_penalty: 2.5 # Small penalty for EXITING lanes (encourages staying in lanes once entered)
-  tss_sepzone_crossing_penalty: 1000.0 # High penalty for separation zones (should avoid)
-  tss_sepboundary_crossing_penalty: 250.0 # Very high penalty for crossing separation boundary lines
-  near_shore_depth_penalty: 5.0
-  land_proximity_penalty: 0 # Strong penalty for being close to land (within 20 nautical miles)
+  max_turn_deg: 90
   density_bias: -1.0

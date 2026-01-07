@@ -36,8 +36,13 @@ def create_tile_image(
     sepboundary_mask: np.ndarray | None,
     bbox: tuple,
     size: int = 512,
-) -> str:
-    """Create a PNG image for the bbox and return as base64."""
+) -> tuple[str, tuple]:
+    """Create a PNG image for the bbox and return as base64 with actual bounds.
+    
+    Returns:
+        Tuple of (base64_image, actual_bounds) where actual_bounds is 
+        (lon_min, lon_max, lat_min, lat_max) matching the extracted pixels.
+    """
     lon_min, lon_max, lat_min, lat_max = bbox
     
     # Convert bbox to grid indices
@@ -45,6 +50,14 @@ def create_tile_image(
     x_max = min(grid.width, int((lon_max - grid.xmin) / grid.dx))
     y_min = max(0, int((grid.ymax - lat_max) / grid.dy))
     y_max = min(grid.height, int((grid.ymax - lat_min) / grid.dy))
+    
+    # Calculate actual geographic bounds for these pixel indices
+    # This ensures the overlay aligns exactly with the extracted pixels
+    actual_lon_min = grid.xmin + x_min * grid.dx
+    actual_lon_max = grid.xmin + x_max * grid.dx
+    actual_lat_max = grid.ymax - y_min * grid.dy  # top edge
+    actual_lat_min = grid.ymax - y_max * grid.dy  # bottom edge
+    actual_bounds = (actual_lon_min, actual_lon_max, actual_lat_min, actual_lat_max)
     
     # Extract subsets
     land_sub = land_mask[y_min:y_max, x_min:x_max]
@@ -76,14 +89,15 @@ def create_tile_image(
         boundary_pixels = (sepboundary_sub > 0) & (~land_pixels)
         img_data[boundary_pixels] = [255, 107, 107, 200]
     
-    # Create PIL image and resize
+    # Create PIL image - DO NOT resize to square, keep original aspect ratio
+    # The geographic bounds will handle proper placement on the map
     img = Image.fromarray(img_data, mode='RGBA')
-    img = img.resize((size, size), Image.Resampling.NEAREST)
+    # No resize - keep 1:1 pixel to grid cell correspondence
     
     # Convert to base64
     buffer = io.BytesIO()
     img.save(buffer, format='PNG')
-    return base64.b64encode(buffer.getvalue()).decode()
+    return base64.b64encode(buffer.getvalue()).decode(), actual_bounds
 
 
 def fetch_route(start: tuple, end: tuple, api_url: str = "http://127.0.0.1:8000") -> dict:
@@ -132,10 +146,12 @@ def create_html_map(
         max(lats) + margin,
     )
     
-    overlay_base64 = create_tile_image(
+    overlay_base64, actual_bbox = create_tile_image(
         grid, land_mask, lane_mask, sepzone_mask, sepboundary_mask,
-        bbox, size=1024
+        bbox
     )
+    # Use actual_bbox for overlay bounds to ensure pixel-perfect alignment
+    bbox = actual_bbox
     
     # Generate waypoint markers
     waypoint_markers = []
