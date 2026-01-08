@@ -121,7 +121,7 @@ routing:
 # ----------------------------------------------------------------------
 mode:
   # "speed" keeps current behavior; "precision" tightens TSS compliance.
-  mode: "precision"
+  mode: "speed"
   precision_tss_max_lane_deviation_deg: 30.0
   precision_wrong_way_hard: true
   precision_snap_lane_graph: true
