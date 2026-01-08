@@ -574,7 +574,8 @@ class TSSFields:
 
     def snap_point_to_lane(self, x: int, y: int) -> Tuple[int, int]:
         """Project a grid point to the nearest lane graph segment."""
-        if self.lane_graph is None or not self.lane_graph.size:
+        lane_graph = self.lane_graph
+        if not isinstance(lane_graph, np.ndarray) or not lane_graph.size:
             return x, y
 
         px = float(x)
@@ -582,7 +583,7 @@ class TSSFields:
         best_dist = float("inf")
         best_point = (x, y)
 
-        for x0, y0, x1, y1 in self.lane_graph:
+        for x0, y0, x1, y1 in lane_graph:
             vx = float(x1 - x0)
             vy = float(y1 - y0)
             denom = vx * vx + vy * vy
@@ -605,7 +606,8 @@ class TSSFields:
 
     def snap_segment_to_lane(self, p0: Tuple[int, int], p1: Tuple[int, int]) -> Tuple[Tuple[int, int], Tuple[int, int]]:
         """Snap segment endpoints to the nearest lane graph segments if lane intersection occurs."""
-        if self.lane_graph is None or not self.lane_graph.size:
+        lane_graph = self.lane_graph
+        if not isinstance(lane_graph, np.ndarray) or not lane_graph.size:
             return p0, p1
         x0, y0 = p0
         x1, y1 = p1
@@ -615,7 +617,8 @@ class TSSFields:
 
     def snap_path_xy(self, path_xy: Iterable[Tuple[int, int]]) -> list[Tuple[int, int]]:
         """Snap path points to the lane graph when segments intersect lanes."""
-        if self.lane_graph is None or not self.lane_graph.size:
+        lane_graph = self.lane_graph
+        if not isinstance(lane_graph, np.ndarray) or not lane_graph.size:
             return list(path_xy)
 
         path_list = list(path_xy)
