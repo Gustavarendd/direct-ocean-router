@@ -25,6 +25,8 @@ class CostWeights:
     tss_max_lane_deviation_deg: float = 45.0
     tss_snap_corridor_enabled: bool = True
     tss_snap_corridor_radius_nm: float = 3.0
+    tss_lane_graph_lock_enabled: bool = False
+    tss_lane_graph_lock_radius_nm: float = 0.5
     near_shore_depth_penalty: float = 5.0
     land_proximity_penalty: float = 100.0  # Strong penalty for being close to land
     land_proximity_max_distance_cells: int = 50  # Max distance to check for land proximity
@@ -45,6 +47,8 @@ class CostWeights:
             tss_max_lane_deviation_deg=config.get("tss_max_lane_deviation_deg", 45.0),
             tss_snap_corridor_enabled=config.get("tss_snap_corridor_enabled", True),
             tss_snap_corridor_radius_nm=config.get("tss_snap_corridor_radius_nm", 3.0),
+            tss_lane_graph_lock_enabled=config.get("tss_lane_graph_lock_enabled", False),
+            tss_lane_graph_lock_radius_nm=config.get("tss_lane_graph_lock_radius_nm", 0.5),
             near_shore_depth_penalty=config.get("near_shore_depth_penalty", 5.0),
             land_proximity_penalty=config.get("land_proximity_penalty", 100.0),
             density_bias=config.get("density_bias", -2.0),

@@ -15,17 +15,43 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class LaneGraph:
+    nodes_lon: np.ndarray
+    nodes_lat: np.ndarray
+    edges_u: np.ndarray
+    edges_v: np.ndarray
+    edges_weight: np.ndarray
+    edges_flow_bearing: np.ndarray
+    edges_length_nm: np.ndarray
+
+    @classmethod
+    def from_npz(cls, path: Path) -> "LaneGraph":
+        data = np.load(path)
+        return cls(
+            nodes_lon=data["nodes_lon"],
+            nodes_lat=data["nodes_lat"],
+            edges_u=data["edges_u"],
+            edges_v=data["edges_v"],
+            edges_weight=data["edges_weight"],
+            edges_flow_bearing=data["edges_flow_bearing"],
+            edges_length_nm=data["edges_length_nm"],
+        )
+
+
+@dataclass
 class TSSFields:
     lane_mask_path: Path
     direction_field_path: Path
     sepzone_mask_path: Optional[Path] = None
     sepboundary_mask_path: Optional[Path] = None
+    lane_graph_path: Optional[Path] = None
 
     def __post_init__(self) -> None:
         self._lane_mask = MemMapLoader(self.lane_mask_path, dtype=np.uint8)
         self._dir_field = MemMapLoader(self.direction_field_path, dtype=np.int16)
         self._sepzone_mask = MemMapLoader(self.sepzone_mask_path, dtype=np.uint8) if self.sepzone_mask_path else None
         self._sepboundary_mask = MemMapLoader(self.sepboundary_mask_path, dtype=np.uint8) if self.sepboundary_mask_path else None
+        self._lane_graph: Optional[LaneGraph] = None
 
     @property
     def lane_mask(self) -> np.memmap:
@@ -42,6 +68,12 @@ class TSSFields:
     @property
     def sepboundary_mask(self) -> Optional[np.memmap]:
         return self._sepboundary_mask.array if self._sepboundary_mask else None
+
+    @property
+    def lane_graph(self) -> Optional[LaneGraph]:
+        if self._lane_graph is None and self.lane_graph_path and self.lane_graph_path.exists():
+            self._lane_graph = LaneGraph.from_npz(self.lane_graph_path)
+        return self._lane_graph
 
     def alignment_penalty(
         self, 

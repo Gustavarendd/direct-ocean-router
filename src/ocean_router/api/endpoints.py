@@ -25,6 +25,7 @@ from ocean_router.routing.astar_fast import (
     _build_corridor_from_path,
     AStarResult,
 )
+from ocean_router.routing.lane_graph import build_lane_graph_macro_path
 from ocean_router.routing.simplify import simplify_path, simplify_between_tss_boundaries, tss_aware_simplify, repair_tss_violations
 
 
@@ -178,7 +179,25 @@ def compute_route(
         )
         print(f"[TIMING] CostContext creation: {(time.perf_counter() - t0)*1000:.1f}ms")
         print(f"[ROUTE] CostContext created with land={'present' if land else 'None'}")
-        
+
+        lane_macro_path: Optional[List[Tuple[int, int]]] = None
+        if (
+            tss is not None
+            and tss.lane_graph is not None
+            and cfg.tss.lane_graph_macro_enabled
+        ):
+            lane_macro_path = build_lane_graph_macro_path(
+                start,
+                end,
+                grid,
+                tss.lane_graph,
+                cfg.tss.lane_graph_snap_max_nm,
+            )
+            if lane_macro_path:
+                print(f"[TSS MACRO] Lane-graph macro path with {len(lane_macro_path)} points")
+            else:
+                print("[TSS MACRO] Lane-graph macro path unavailable")
+
         # Pre-compute distance transform to enable land proximity penalties during search
         if land is not None:
             t0 = time.perf_counter()
@@ -422,6 +441,8 @@ def compute_route(
                                 min_draft=min_draft,
                                 weights=weights,
                                 canals=canals,
+                                corridor_path=lane_macro_path,
+                                corridor_backbone=lane_macro_path,
                             )
                             astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre)
             except Exception as e:
@@ -435,6 +456,8 @@ def compute_route(
                     min_draft=min_draft,
                     weights=weights,
                     canals=canals,
+                    corridor_path=lane_macro_path,
+                    corridor_backbone=lane_macro_path,
                 )
                 astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre)
         print(f"[TIMING] Algorithm setup: {(time.perf_counter() - t0)*1000:.1f}ms")
@@ -465,6 +488,8 @@ def compute_route(
                     min_draft=min_draft,
                     weights=weights,
                     canals=canals,
+                    corridor_path=lane_macro_path,
+                    corridor_backbone=lane_macro_path,
                 )
                 fallback_astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre)
                 t0_fb = time.perf_counter()
@@ -493,6 +518,8 @@ def compute_route(
                             min_draft=min_draft,
                             weights=weights,
                             canals=canals,
+                            corridor_path=lane_macro_path,
+                            corridor_backbone=lane_macro_path,
                         )
                         expanded_astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre_e)
                         t0_e = time.perf_counter()
@@ -528,6 +555,8 @@ def compute_route(
                         min_draft=min_draft,
                         weights=weights,
                         canals=canals,
+                        corridor_path=lane_macro_path,
+                        corridor_backbone=lane_macro_path,
                     )
                     r_res = FastCorridorAStar(grid, r_corridor, r_x_off, r_y_off, precomputed=r_pre).search(start, end, relaxed_ctx, weights, min_draft, heuristic_weight=heuristic_weight)
                     t_r = time.perf_counter() - t0_r
@@ -560,6 +589,8 @@ def compute_route(
                         min_draft=min_draft,
                         weights=weights,
                         canals=canals,
+                        corridor_path=lane_macro_path,
+                        corridor_backbone=lane_macro_path,
                     )
                     r2_res = FastCorridorAStar(grid, r2_corridor, r2_x_off, r2_y_off, precomputed=r2_pre).search(start, end, relaxed_ctx2, weights, min_draft, heuristic_weight=heuristic_weight)
                     t_r2 = time.perf_counter() - t0_r2
@@ -592,6 +623,8 @@ def compute_route(
                         min_draft=min_draft,
                         weights=weights,
                         canals=canals,
+                        corridor_path=lane_macro_path,
+                        corridor_backbone=lane_macro_path,
                     )
                     r3_res = FastCorridorAStar(grid, r3_corridor, r3_x_off, r3_y_off, precomputed=r3_pre).search(start, end, relaxed_ctx3, weights, min_draft, heuristic_weight=heuristic_weight)
                     t_r3 = time.perf_counter() - t0_r3
