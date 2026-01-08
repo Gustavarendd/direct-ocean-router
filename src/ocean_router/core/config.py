@@ -85,6 +85,16 @@ class RoutingConfig:
 
 
 @dataclass
+class ModeConfig:
+    """Routing mode configuration."""
+    mode: str = "speed"  # "speed" or "precision"
+    precision_tss_max_lane_deviation_deg: float = 30.0
+    precision_wrong_way_hard: bool = True
+    precision_snap_lane_graph: bool = True
+    precision_disable_lane_smoothing: bool = True
+
+
+@dataclass
 class RouterConfig:
     """Complete router configuration."""
     algorithm: AlgorithmConfig = field(default_factory=AlgorithmConfig)
@@ -95,6 +105,7 @@ class RouterConfig:
     simplify: SimplifyConfig = field(default_factory=SimplifyConfig)
     bypass: BypassConfig = field(default_factory=BypassConfig)
     routing: RoutingConfig = field(default_factory=RoutingConfig)
+    mode: ModeConfig = field(default_factory=ModeConfig)
 
     @classmethod
     def from_yaml(cls, path: Path) -> "RouterConfig":
@@ -111,6 +122,7 @@ class RouterConfig:
             simplify=SimplifyConfig(**data.get('simplify', {})),
             bypass=BypassConfig(**data.get('bypass', {})),
             routing=RoutingConfig(**data.get('routing', {})),
+            mode=ModeConfig(**data.get('mode', {})),
         )
 
 

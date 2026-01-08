@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING, Iterable, Tuple
 
 import numpy as np
 
@@ -51,7 +51,7 @@ class TSSFields:
         self._dir_field = MemMapLoader(self.direction_field_path, dtype=np.int16)
         self._sepzone_mask = MemMapLoader(self.sepzone_mask_path, dtype=np.uint8) if self.sepzone_mask_path else None
         self._sepboundary_mask = MemMapLoader(self.sepboundary_mask_path, dtype=np.uint8) if self.sepboundary_mask_path else None
-        self._lane_graph: Optional[LaneGraph] = None
+        self._lane_graph = MemMapLoader(self.lane_graph_path, dtype=np.int32) if self.lane_graph_path else None
 
     @property
     def lane_mask(self) -> np.memmap:
@@ -70,10 +70,11 @@ class TSSFields:
         return self._sepboundary_mask.array if self._sepboundary_mask else None
 
     @property
-    def lane_graph(self) -> Optional[LaneGraph]:
-        if self._lane_graph is None and self.lane_graph_path and self.lane_graph_path.exists():
-            self._lane_graph = LaneGraph.from_npz(self.lane_graph_path)
-        return self._lane_graph
+    def lane_graph(self) -> Optional[np.memmap]:
+        return self._lane_graph.array if self._lane_graph else None
+
+    def has_lane_graph(self) -> bool:
+        return self._lane_graph is not None
 
     def alignment_penalty(
         self, 
@@ -520,6 +521,100 @@ class TSSFields:
                 y += sy
         
         return False
+
+    def line_intersects_lane(self, y0: int, x0: int, y1: int, x1: int) -> bool:
+        """Check if a line passes through any TSS lane cells."""
+        dx = abs(x1 - x0)
+        dy = abs(y1 - y0)
+        sx = 1 if x0 < x1 else -1
+        sy = 1 if y0 < y1 else -1
+        err = dx - dy
+
+        x, y = x0, y0
+
+        while True:
+            if 0 <= y < self.lane_mask.shape[0] and 0 <= x < self.lane_mask.shape[1]:
+                if bool(self.lane_mask[y, x]):
+                    return True
+
+            if x == x1 and y == y1:
+                break
+
+            e2 = 2 * err
+            if e2 > -dy:
+                err -= dy
+                x += sx
+            if e2 < dx:
+                err += dx
+                y += sy
+
+        return False
+
+    def snap_point_to_lane(self, x: int, y: int) -> Tuple[int, int]:
+        """Project a grid point to the nearest lane graph segment."""
+        if self.lane_graph is None or not self.lane_graph.size:
+            return x, y
+
+        px = float(x)
+        py = float(y)
+        best_dist = float("inf")
+        best_point = (x, y)
+
+        for x0, y0, x1, y1 in self.lane_graph:
+            vx = float(x1 - x0)
+            vy = float(y1 - y0)
+            denom = vx * vx + vy * vy
+            if denom == 0:
+                proj_x, proj_y = float(x0), float(y0)
+            else:
+                t = ((px - x0) * vx + (py - y0) * vy) / denom
+                t = max(0.0, min(1.0, t))
+                proj_x = float(x0) + t * vx
+                proj_y = float(y0) + t * vy
+
+            dx = px - proj_x
+            dy = py - proj_y
+            dist = dx * dx + dy * dy
+            if dist < best_dist:
+                best_dist = dist
+                best_point = (int(round(proj_x)), int(round(proj_y)))
+
+        return best_point
+
+    def snap_segment_to_lane(self, p0: Tuple[int, int], p1: Tuple[int, int]) -> Tuple[Tuple[int, int], Tuple[int, int]]:
+        """Snap segment endpoints to the nearest lane graph segments if lane intersection occurs."""
+        if self.lane_graph is None or not self.lane_graph.size:
+            return p0, p1
+        x0, y0 = p0
+        x1, y1 = p1
+        if not self.line_intersects_lane(y0, x0, y1, x1):
+            return p0, p1
+        return self.snap_point_to_lane(x0, y0), self.snap_point_to_lane(x1, y1)
+
+    def snap_path_xy(self, path_xy: Iterable[Tuple[int, int]]) -> list[Tuple[int, int]]:
+        """Snap path points to the lane graph when segments intersect lanes."""
+        if self.lane_graph is None or not self.lane_graph.size:
+            return list(path_xy)
+
+        path_list = list(path_xy)
+        if len(path_list) < 2:
+            return path_list
+
+        snap_indices = set()
+        for i in range(len(path_list) - 1):
+            x0, y0 = path_list[i]
+            x1, y1 = path_list[i + 1]
+            if self.line_intersects_lane(y0, x0, y1, x1):
+                snap_indices.add(i)
+                snap_indices.add(i + 1)
+
+        snapped = []
+        for i, (x, y) in enumerate(path_list):
+            if i in snap_indices:
+                x, y = self.snap_point_to_lane(x, y)
+            if not snapped or (x, y) != snapped[-1]:
+                snapped.append((x, y))
+        return snapped
 
     def blocked(self, y: int, x: int) -> bool:
         if self.sepzone_mask is None:

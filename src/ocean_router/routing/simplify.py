@@ -366,7 +366,9 @@ def _is_clear_straight_path(
     land_mask: 'LandMask',
     tss_fields: Optional['TSSFields'] = None,
     min_land_distance_cells: int = 3,
-    check_tss_direction: bool = True
+    check_tss_direction: bool = True,
+    snap_to_lane_graph: bool = False,
+    disable_lane_smoothing: bool = False,
 ) -> bool:
     """Check if a straight line between two lon/lat points is clear.
     
@@ -385,6 +387,8 @@ def _is_clear_straight_path(
         tss_fields: Optional TSS fields for lane and direction checking
         min_land_distance_cells: Minimum distance from land in grid cells
         check_tss_direction: If True, reject paths that go wrong-way in TSS lanes
+        snap_to_lane_graph: If True, snap endpoints to lane graph for boundary checks
+        disable_lane_smoothing: If True, disallow straight paths that enter lanes
         
     Returns:
         True if the straight line is clear
@@ -402,9 +406,17 @@ def _is_clear_straight_path(
         end_in_lane = tss_fields.in_lane(y1, x1)
         enforce_lane_continuity = start_in_lane and end_in_lane
 
-        # Reject if a direct segment crosses separation zones or boundary lines
-        if tss_fields.line_crosses_boundary(y0, x0, y1, x1):
+        if disable_lane_smoothing and tss_fields.line_intersects_lane(y0, x0, y1, x1):
             return False
+
+        # Reject if a direct segment crosses separation zones or boundary lines
+        if snap_to_lane_graph and tss_fields.has_lane_graph() and tss_fields.line_intersects_lane(y0, x0, y1, x1):
+            (sx0, sy0), (sx1, sy1) = tss_fields.snap_segment_to_lane((x0, y0), (x1, y1))
+            if tss_fields.line_crosses_boundary(sy0, sx0, sy1, sx1):
+                return False
+        else:
+            if tss_fields.line_crosses_boundary(y0, x0, y1, x1):
+                return False
 
         # Reject if any portion of the straight line would travel the wrong way through a lane
         # Pass grid for accurate geodetic bearing calculation
@@ -470,6 +482,34 @@ def _is_clear_straight_path(
     return True
 
 
+def _snap_path_to_lane_graph(
+    path: List[Tuple[float, float]],
+    grid: 'GridSpec',
+    tss_fields: Optional['TSSFields'],
+) -> List[Tuple[float, float]]:
+    """Snap path points to lane graph where segments intersect lanes."""
+    if not path or tss_fields is None or not tss_fields.has_lane_graph():
+        return path
+
+    snap_indices = set()
+    for i in range(len(path) - 1):
+        x0, y0 = grid.lonlat_to_xy(path[i][0], path[i][1])
+        x1, y1 = grid.lonlat_to_xy(path[i + 1][0], path[i + 1][1])
+        if tss_fields.line_intersects_lane(y0, x0, y1, x1):
+            snap_indices.add(i)
+            snap_indices.add(i + 1)
+
+    snapped: List[Tuple[float, float]] = []
+    for i, (lon, lat) in enumerate(path):
+        if i in snap_indices:
+            x, y = grid.lonlat_to_xy(lon, lat)
+            sx, sy = tss_fields.snap_point_to_lane(x, y)
+            lon, lat = grid.xy_to_lonlat(sx, sy)
+        if not snapped or (lon, lat) != snapped[-1]:
+            snapped.append((lon, lat))
+    return snapped
+
+
 def _check_tss_lane_status(
     path: List[Tuple[float, float]],
     grid: 'GridSpec',
@@ -497,7 +537,9 @@ def tss_aware_simplify(
     land_mask: Optional['LandMask'],
     preserve_points: Optional[List[Tuple[float, float]]] = None,
     max_simplify_nm: float = 50.0,
-    min_land_distance_cells: int = 3
+    min_land_distance_cells: int = 3,
+    snap_to_lane_graph: bool = False,
+    disable_lane_smoothing: bool = False,
 ) -> Tuple[List[Tuple[float, float]], List[bool]]:
     """Perform TSS-aware path simplification.
     
@@ -514,6 +556,8 @@ def tss_aware_simplify(
         preserve_points: Points that must be kept
         max_simplify_nm: Maximum distance to simplify over (prevents skipping islands)
         min_land_distance_cells: Minimum distance from land in grid cells
+        snap_to_lane_graph: If True, snap points to lane graph centerlines in TSS regions
+        disable_lane_smoothing: If True, do not simplify across TSS lanes
         
     Returns:
         (simplified_path, in_tss_lane) - simplified path and TSS status for each point
@@ -569,7 +613,16 @@ def tss_aware_simplify(
             if cell_dist > max_simplify_cells:
                 continue
             # Check if straight path is clear
-            if _is_clear_straight_path(complete_path[s], complete_path[e], grid, land_mask, tss_fields, min_land_distance_cells):
+            if _is_clear_straight_path(
+                complete_path[s],
+                complete_path[e],
+                grid,
+                land_mask,
+                tss_fields,
+                min_land_distance_cells,
+                snap_to_lane_graph=snap_to_lane_graph,
+                disable_lane_smoothing=disable_lane_smoothing,
+            ):
                 for k in range(s + 1, e):
                     if complete_path[k] not in preserve_set:
                         keep_wp[k] = False
@@ -609,7 +662,16 @@ def tss_aware_simplify(
             if cell_dist > max_simplify_cells:
                 continue
             
-            if _is_clear_straight_path(complete_path[s], complete_path[e], grid, land_mask, tss_fields, min_land_distance_cells):
+            if _is_clear_straight_path(
+                complete_path[s],
+                complete_path[e],
+                grid,
+                land_mask,
+                tss_fields,
+                min_land_distance_cells,
+                snap_to_lane_graph=snap_to_lane_graph,
+                disable_lane_smoothing=disable_lane_smoothing,
+            ):
                 for k in range(s + 1, e):
                     if complete_path[k] not in preserve_set:
                         keep_wp[k] = False
@@ -655,7 +717,14 @@ def tss_aware_simplify(
                         cell_dist = math.hypot(x1 - x0, y1 - y0)
                         
                         if cell_dist <= max_simplify_cells and _is_clear_straight_path(
-                            complete_path[j], complete_path[i], grid, land_mask, tss_fields, min_land_distance_cells
+                            complete_path[j],
+                            complete_path[i],
+                            grid,
+                            land_mask,
+                            tss_fields,
+                            min_land_distance_cells,
+                            snap_to_lane_graph=snap_to_lane_graph,
+                            disable_lane_smoothing=disable_lane_smoothing,
                         ):
                             best_j = j
                             break
@@ -672,6 +741,10 @@ def tss_aware_simplify(
             complete_path = [p for p, keep in zip(complete_path, keep_wp2) if keep]
             in_tss_lane = [f for f, keep in zip(in_tss_lane, keep_wp2) if keep]
     
+    if snap_to_lane_graph and tss_fields is not None:
+        complete_path = _snap_path_to_lane_graph(complete_path, grid, tss_fields)
+        in_tss_lane = _check_tss_lane_status(complete_path, grid, tss_fields)
+
     return complete_path, in_tss_lane
 
 

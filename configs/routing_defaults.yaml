@@ -115,3 +115,14 @@ routing:
   allow_diagonals: true
   max_turn_deg: 90
   density_bias: -1.0
+
+# ----------------------------------------------------------------------
+# Precision vs speed mode settings
+# ----------------------------------------------------------------------
+mode:
+  # "speed" keeps current behavior; "precision" tightens TSS compliance.
+  mode: "speed"
+  precision_tss_max_lane_deviation_deg: 30.0
+  precision_wrong_way_hard: true
+  precision_snap_lane_graph: true
+  precision_disable_lane_smoothing: true
