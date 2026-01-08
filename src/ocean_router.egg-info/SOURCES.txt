@@ -35,5 +35,6 @@ src/ocean_router/routing/astar_fast.py
 src/ocean_router/routing/astar_numba.py
 src/ocean_router/routing/corridor.py
 src/ocean_router/routing/costs.py
+src/ocean_router/routing/lane_graph.py
 src/ocean_router/routing/reconstruct.py
 src/ocean_router/routing/simplify.py

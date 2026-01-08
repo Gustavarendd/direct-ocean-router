@@ -51,7 +51,18 @@ class TSSFields:
         self._dir_field = MemMapLoader(self.direction_field_path, dtype=np.int16)
         self._sepzone_mask = MemMapLoader(self.sepzone_mask_path, dtype=np.uint8) if self.sepzone_mask_path else None
         self._sepboundary_mask = MemMapLoader(self.sepboundary_mask_path, dtype=np.uint8) if self.sepboundary_mask_path else None
-        self._lane_graph = MemMapLoader(self.lane_graph_path, dtype=np.int32) if self.lane_graph_path else None
+        # Lane graph data may be stored as a .npz (nodes/edges arrays) or
+        # as a memmapped array of integer segment endpoints. Load the
+        # .npz into a LaneGraph dataclass so callers expecting attributes
+        # like `nodes_lon` work correctly; otherwise fall back to the
+        # MemMapLoader for other binary formats.
+        if self.lane_graph_path:
+            if self.lane_graph_path.suffix == ".npz":
+                self._lane_graph = LaneGraph.from_npz(self.lane_graph_path)
+            else:
+                self._lane_graph = MemMapLoader(self.lane_graph_path, dtype=np.int32)
+        else:
+            self._lane_graph = None
 
     @property
     def lane_mask(self) -> np.memmap:
@@ -70,8 +81,19 @@ class TSSFields:
         return self._sepboundary_mask.array if self._sepboundary_mask else None
 
     @property
-    def lane_graph(self) -> Optional[np.memmap]:
-        return self._lane_graph.array if self._lane_graph else None
+    def lane_graph(self) -> Optional[LaneGraph | np.memmap]:
+        """Return either a `LaneGraph` (for .npz files) or a memmap array.
+
+        Some callers expect a `LaneGraph` with attributes like `nodes_lon`,
+        while others expect a memmapped array of integer segment endpoints.
+        This accessor returns whichever representation was loaded.
+        """
+        if self._lane_graph is None:
+            return None
+        # MemMapLoader instances expose `.array`, LaneGraph does not
+        if isinstance(self._lane_graph, MemMapLoader):
+            return self._lane_graph.array
+        return self._lane_graph
 
     def has_lane_graph(self) -> bool:
         return self._lane_graph is not None
