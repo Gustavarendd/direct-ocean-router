@@ -28,24 +28,55 @@ from ocean_router.routing.astar_fast import (
 from ocean_router.routing.simplify import simplify_path, simplify_between_tss_boundaries, tss_aware_simplify, repair_tss_violations
 
 
-def _is_open_ocean_route(start: Tuple[float, float], end: Tuple[float, float], 
-                        land: Optional[LandMask], grid: GridSpec) -> bool:
-    """Check if the straight-line route stays safely away from land.
-    
-    For transoceanic routes, we sample points along the rhumb line and ensure
-    they stay at least 2nm from land.
-    """
-    if land is None:
-        return True  # No land data, assume open ocean
+def _is_open_ocean_route(
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+    land: Optional[LandMask],
+    tss: Optional[TSSFields],
+    grid: GridSpec,
+) -> bool:
+    """Check if the straight-line route stays safely away from land and TSS."""
+    if land is None and tss is None:
+        return True  # No land/TSS data, assume open ocean
     
     # Sample points along the rhumb line route
     total_dist_nm = rhumb_distance_nm(start[0], start[1], end[0], end[1])
     cell_nm = grid.dy * 60.0
+    lat1, lon1 = start[1], start[0]  # start is (lon, lat)
+    lat2, lon2 = end[1], end[0]
+
+    # If TSS data exists, disable fast path when the straight line intersects lanes/zones.
+    if tss is not None:
+        tss_spacing_nm = max(0.25, cell_nm * 0.5)
+        tss_samples = max(10, int(total_dist_nm / tss_spacing_nm))
+        tss_samples = min(tss_samples, 20000)
+        for i in range(tss_samples + 1):
+            frac = i / tss_samples
+            lon, lat = rhumb_interpolate(lon1, lat1, lon2, lat2, frac)
+            try:
+                x, y = grid.lonlat_to_xy(lon, lat)
+                if not (0 <= y < grid.height and 0 <= x < grid.width):
+                    continue
+                if (
+                    tss.in_sepzone(y, x)
+                    or tss.in_sepboundary(y, x)
+                    or tss.in_or_near_lane(y, x)
+                ):
+                    print(
+                        f"[TSS CHECK] TSS encountered along straight line at ({lat:.2f}, {lon:.2f}); "
+                        "disabling fast path"
+                    )
+                    return False
+            except Exception:
+                # If coordinate conversion fails, be conservative
+                return False
+
+    if land is None:
+        return True  # No land data, assume open ocean
+
     sample_spacing_nm = max(2.0, cell_nm * 3.0)
     num_samples = max(10, int(total_dist_nm / sample_spacing_nm))
     num_samples = min(num_samples, 5000)
-    lat1, lon1 = start[1], start[0]  # start is (lon, lat)
-    lat2, lon2 = end[1], end[0]
     
     min_land_dist = float('inf')
     for i in range(num_samples + 1):
@@ -72,7 +103,7 @@ def _is_open_ocean_route(start: Tuple[float, float], end: Tuple[float, float],
             if dist_nm < required_dist:
                 print(f"[LAND CHECK] Point {i}/{num_samples} at ({lat:.2f}, {lon:.2f}) too close to land: {dist_nm:.2f} nm")
                 return False  # Too close to land
-        except:
+        except Exception:
             # If coordinate conversion fails, be conservative
             return False
     
@@ -171,7 +202,7 @@ def compute_route(
         canal_coarse_override = canal_mask_coarse(canals, grid, cfg.algorithm.coarse_scale) if canals else None
         
         # Fast path for open ocean routes: if stays away from land, return straight line
-        if _is_open_ocean_route(start, end, land, grid):
+        if _is_open_ocean_route(start, end, land, tss, grid):
             print(f"[FAST PATH] Open ocean route detected ({straight_line_dist:.1f} nm), returning straight line")
             return [start, end], rhumb_distance_nm(start[0], start[1], end[0], end[1]), []
         
@@ -245,6 +276,8 @@ def compute_route(
                     min_draft=min_draft,
                     weights=weights,
                     override_mask=override_mask,
+                    corridor_path=full_macro,
+                    grid=grid,
                 )
                 macro_astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre)
                 macro_res = macro_astar.search(start, end, context, weights, min_draft, heuristic_weight=search_heuristic)

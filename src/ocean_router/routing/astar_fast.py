@@ -435,10 +435,13 @@ class HierarchicalAStar:
         sx, sy = start_x - self.x_off, start_y - self.y_off
         gx, gy = goal_x - self.x_off, goal_y - self.y_off
         
-        h, w = self.corridor_mask.shape
-        if not (0 <= sy < h and 0 <= sx < w and self.corridor_mask[sy, sx]):
+        corridor_mask = self.precomputed.get("snap_corridor_mask") if hasattr(self, "precomputed") else None
+        if corridor_mask is None or not corridor_mask.size:
+            corridor_mask = self.corridor_mask
+        h, w = corridor_mask.shape
+        if not (0 <= sy < h and 0 <= sx < w and corridor_mask[sy, sx]):
             raise ValueError("start outside corridor")
-        if not (0 <= gy < h and 0 <= gx < w and self.corridor_mask[gy, gx]):
+        if not (0 <= gy < h and 0 <= gx < w and corridor_mask[gy, gx]):
             raise ValueError("goal outside corridor")
         
         # Build coarse traversable mask
@@ -483,6 +486,7 @@ class HierarchicalAStar:
     ) -> AStarResult:
         """Fine-grained A* search in a narrow corridor."""
         h, w = corridor.shape
+        corridor_mask = corridor
         
         # Use arrays for faster access
         INF = 1e30
@@ -640,7 +644,7 @@ class HierarchicalAStar:
                     continue
                 if closed[ny, nx]:
                     continue
-                if not corridor[ny, nx]:
+                if not corridor_mask[ny, nx]:
                     continue
                 time_neighbor_gen += time.perf_counter() - t0
                 
@@ -672,12 +676,30 @@ class HierarchicalAStar:
                 if context.tss:
                     gcx = self.x_off + cx
                     gcy = self.y_off + cy
-                    if context.tss.in_or_near_lane(gny, gnx):
+                    in_near = context.tss.in_or_near_lane(gny, gnx, radius=weights.tss_proximity_check_radius)
+                    if weights.tss_off_lane_penalty > 0 and in_near and not context.tss.in_lane(gny, gnx):
+                        wrong_only = context.tss._check_nearby_wrong_way(
+                            gny, gnx, move_bearing, radius=weights.tss_proximity_check_radius
+                        )
+                        if not wrong_only:
+                            penalty += weights.tss_off_lane_penalty
+                    if in_near:
                         goal_x_g, goal_y_g = self.x_off + goal[0], self.y_off + goal[1]
-                        goal_bearing = math.degrees(math.atan2(goal_x_g - gnx, -(goal_y_g - gny))) % 360
+                        goal_bearing = math.degrees(math.atan2(goal_x_g - gcx, -(goal_y_g - gcy))) % 360
                     else:
                         goal_bearing = None
-                    penalty += context.tss.alignment_penalty(gny, gnx, move_bearing, weights.tss_wrong_way_penalty, weights.tss_alignment_weight, prev_y=gcy, prev_x=gcx, goal_bearing=goal_bearing)
+                    penalty += context.tss.alignment_penalty(
+                        gny,
+                        gnx,
+                        move_bearing,
+                        weights.tss_wrong_way_penalty,
+                        weights.tss_alignment_weight,
+                        prev_y=gcy,
+                        prev_x=gcx,
+                        goal_bearing=goal_bearing,
+                        max_lane_deviation_deg=weights.tss_max_lane_deviation_deg,
+                        proximity_check_radius=weights.tss_proximity_check_radius,
+                    )
                     penalty += context.tss.boundary_crossing_penalty(gcy, gcx, gny, gnx, weights.tss_lane_crossing_penalty, weights.tss_sepzone_crossing_penalty, weights.tss_sepboundary_crossing_penalty)
                 
                 if cur_bearing >= 0:
@@ -1142,11 +1164,18 @@ class CoarseToFineAStar:
             min_draft=min_depth,
             weights=weights,
             override_mask=override_mask,
+            corridor_path=[(sx + x_off, sy + y_off), (gx + x_off, gy + y_off)],
+            grid=self.grid,
         )
         blocked_mask = pre.get("blocked_mask", np.zeros_like(corridor, dtype=bool))
         depth_penalty = pre.get("depth_penalty")
         land_prox_penalty = pre.get("land_prox_penalty")
         tss_in_or_near = pre.get("tss_in_or_near")
+        tss_in_lane = pre.get("tss_in_lane")
+        tss_correct_near = pre.get("tss_correct_near")
+        corridor_bearing = pre.get("corridor_bearing")
+        snap_mask = pre.get("snap_corridor_mask")
+        corridor_mask = corridor if snap_mask is None or not snap_mask.size else snap_mask
         goal_x_g = x_off + gx
         goal_y_g = y_off + gy
         
@@ -1202,7 +1231,7 @@ class CoarseToFineAStar:
                     continue
                 if closed[ny, nx]:
                     continue
-                if not corridor[ny, nx]:
+                if not corridor_mask[ny, nx]:
                     continue
                 
                 gnx = x_off + nx
@@ -1241,18 +1270,36 @@ class CoarseToFineAStar:
                         in_near = bool(tss_in_or_near[ny, nx])
                         prev_in_near = bool(tss_in_or_near[cy, cx])
                     else:
-                        in_near = context.tss.in_or_near_lane(gny, gnx)
-                        prev_in_near = context.tss.in_or_near_lane(gcy, gcx)
+                        in_near = context.tss.in_or_near_lane(gny, gnx, radius=weights.tss_proximity_check_radius)
+                        prev_in_near = context.tss.in_or_near_lane(gcy, gcx, radius=weights.tss_proximity_check_radius)
+
+                    if weights.tss_off_lane_penalty > 0:
+                        in_lane = False
+                        if tss_in_lane is not None and tss_in_lane.size:
+                            in_lane = bool(tss_in_lane[ny, nx])
+                        elif context.tss.in_lane(gny, gnx):
+                            in_lane = True
+                        if (in_near or prev_in_near) and not in_lane:
+                            if tss_correct_near is not None and bool(tss_correct_near[ny, nx]):
+                                penalty += weights.tss_off_lane_penalty
 
                     if in_near or prev_in_near:
-                        goal_bearing = math.degrees(math.atan2(goal_x_g - gnx, -(goal_y_g - gny))) % 360
+                        goal_bearing = None
+                        if corridor_bearing is not None and corridor_bearing.size:
+                            cb = corridor_bearing[ny, nx]
+                            if cb >= 0:
+                                goal_bearing = float(cb)
+                        if goal_bearing is None:
+                            goal_bearing = math.degrees(math.atan2(goal_x_g - gcx, -(goal_y_g - gcy))) % 360
                         penalty += context.tss.alignment_penalty(
                             gny, gnx, move_bearing,
                             weights.tss_wrong_way_penalty,
                             weights.tss_alignment_weight,
                             prev_y=gcy,
                             prev_x=gcx,
-                            goal_bearing=goal_bearing
+                            goal_bearing=goal_bearing,
+                            max_lane_deviation_deg=weights.tss_max_lane_deviation_deg,
+                            proximity_check_radius=weights.tss_proximity_check_radius,
                         )
                     # Always apply boundary crossing penalties to avoid cutting across separation lines.
                     penalty += context.tss.boundary_crossing_penalty(
@@ -1350,10 +1397,13 @@ class FastCorridorAStar:
         sx, sy = start_x - self.x_off, start_y - self.y_off
         gx, gy = goal_x - self.x_off, goal_y - self.y_off
         
-        h, w = self.corridor_mask.shape
-        if not (0 <= sy < h and 0 <= sx < w and self.corridor_mask[sy, sx]):
+        corridor_mask = self.precomputed.get("snap_corridor_mask") if hasattr(self, "precomputed") else None
+        if corridor_mask is None or not corridor_mask.size:
+            corridor_mask = self.corridor_mask
+        h, w = corridor_mask.shape
+        if not (0 <= sy < h and 0 <= sx < w and corridor_mask[sy, sx]):
             raise ValueError("start outside corridor")
-        if not (0 <= gy < h and 0 <= gx < w and self.corridor_mask[gy, gx]):
+        if not (0 <= gy < h and 0 <= gx < w and corridor_mask[gy, gx]):
             raise ValueError("goal outside corridor")
         
         # Use numpy arrays for g_score and came_from
@@ -1381,6 +1431,9 @@ class FastCorridorAStar:
         
         open_set = [(heuristic(sx, sy), (sx, sy))]
         explored = 0
+        corridor_bearing = self.precomputed.get('corridor_bearing') if hasattr(self, 'precomputed') else None
+        tss_in_lane = self.precomputed.get('tss_in_lane') if hasattr(self, 'precomputed') else None
+        tss_correct_near = self.precomputed.get('tss_correct_near') if hasattr(self, 'precomputed') else None
         
         # Timing counters for profiling
         time_heappop = 0.0
@@ -1471,7 +1524,7 @@ class FastCorridorAStar:
                     continue
                 if closed[ny, nx]:
                     continue
-                if not self.corridor_mask[ny, nx]:
+                if not corridor_mask[ny, nx]:
                     continue
                 time_neighbor_gen += time.perf_counter() - t0
                 
@@ -1521,18 +1574,36 @@ class FastCorridorAStar:
                         in_near = bool(tin[ny, nx])
                         prev_in_near = bool(tin[cy, cx])
                     else:
-                        in_near = context.tss.in_or_near_lane(gny, gnx)
-                        prev_in_near = context.tss.in_or_near_lane(gy_cur, gx_cur)
+                        in_near = context.tss.in_or_near_lane(gny, gnx, radius=weights.tss_proximity_check_radius)
+                        prev_in_near = context.tss.in_or_near_lane(gy_cur, gx_cur, radius=weights.tss_proximity_check_radius)
+
+                    if weights.tss_off_lane_penalty > 0:
+                        in_lane = False
+                        if tss_in_lane is not None and tss_in_lane.size:
+                            in_lane = bool(tss_in_lane[ny, nx])
+                        elif context.tss.in_lane(gny, gnx):
+                            in_lane = True
+                        if (in_near or prev_in_near) and not in_lane:
+                            if tss_correct_near is not None and bool(tss_correct_near[ny, nx]):
+                                penalty += weights.tss_off_lane_penalty
 
                     if in_near or prev_in_near:
-                        goal_bearing = math.degrees(math.atan2((gx + self.x_off) - gnx, -((gy + self.y_off) - gny))) % 360
+                        goal_bearing = None
+                        if corridor_bearing is not None and corridor_bearing.size:
+                            cb = corridor_bearing[ny, nx]
+                            if cb >= 0:
+                                goal_bearing = float(cb)
+                        if goal_bearing is None:
+                            goal_bearing = math.degrees(math.atan2((gx + self.x_off) - gx_cur, -((gy + self.y_off) - gy_cur))) % 360
                         penalty += context.tss.alignment_penalty(
                             gny, gnx, move_bearing,
                             weights.tss_wrong_way_penalty,
                             weights.tss_alignment_weight,
                             prev_y=gy_cur,
                             prev_x=gx_cur,
-                            goal_bearing=goal_bearing
+                            goal_bearing=goal_bearing,
+                            max_lane_deviation_deg=weights.tss_max_lane_deviation_deg,
+                            proximity_check_radius=weights.tss_proximity_check_radius,
                         )
                     # Always apply boundary crossing penalties to avoid cutting across separation lines.
                     penalty += context.tss.boundary_crossing_penalty(

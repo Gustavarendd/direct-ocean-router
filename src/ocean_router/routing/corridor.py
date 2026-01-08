@@ -11,6 +11,7 @@ from rasterio import features
 import rasterio
 from scipy import ndimage
 
+from ocean_router.core.geodesy import bearing_deg
 from ocean_router.core.grid import GridSpec, window_from_bbox
 from ocean_router.data.canals import canal_mask_window
 
@@ -120,6 +121,7 @@ def build_corridor_with_arrays(
     min_draft: float = 10.0,
     weights: Optional[object] = None,
     canals: Optional[Sequence["Canal"]] = None,
+    corridor_path: Optional[Sequence[Tuple[int, int]]] = None,
 ) -> Tuple[np.ndarray, int, int, Dict[str, Any]]:
     """Build corridor and precompute per-corridor arrays to speed up A*.
 
@@ -129,7 +131,11 @@ def build_corridor_with_arrays(
       - depth_penalty: float array
       - land_prox_penalty: float array
       - tss_in_or_near: bool array
+      - tss_in_lane: bool array
       - tss_direction: float array (or -1)
+      - corridor_bearing: float array (or -1)
+      - snap_corridor_mask: bool array
+      - tss_correct_near: bool array
     """
     mask, x_off, y_off = build_corridor(
         grid,
@@ -143,6 +149,11 @@ def build_corridor_with_arrays(
     if canals:
         canal_mask = canal_mask_window(canals, grid, x_off, y_off, mask.shape[0], mask.shape[1])
 
+    if corridor_path is None:
+        sx, sy = grid.lonlat_to_xy(start[0], start[1])
+        gx, gy = grid.lonlat_to_xy(end[0], end[1])
+        corridor_path = [(sx, sy), (gx, gy)]
+
     pre = precompute_corridor_arrays(
         mask,
         x_off,
@@ -151,6 +162,8 @@ def build_corridor_with_arrays(
         min_draft=min_draft,
         weights=weights,
         override_mask=canal_mask,
+        corridor_path=corridor_path,
+        grid=grid,
     )
 
     return mask, x_off, y_off, pre
@@ -163,8 +176,10 @@ def precompute_corridor_arrays(
     context: Optional[object] = None,
     min_draft: float = 10.0,
     weights: Optional[object] = None,
-    tss_radius: int = 2,
+    tss_radius: Optional[int] = None,
     override_mask: Optional[np.ndarray] = None,
+    corridor_path: Optional[Sequence[Tuple[int, int]]] = None,
+    grid: Optional[GridSpec] = None,
 ) -> Dict[str, Any]:
     """Vectorized precompute of per-corridor arrays for faster A*."""
     pre: Dict[str, Any] = {}
@@ -172,6 +187,10 @@ def precompute_corridor_arrays(
         return pre
 
     h, w = mask.shape
+    if tss_radius is None and weights is not None:
+        tss_radius = int(getattr(weights, "tss_proximity_check_radius", 2))
+    if tss_radius is None:
+        tss_radius = 2
     if h == 0 or w == 0:
         pre["blocked_mask"] = np.zeros((h, w), dtype=bool)
         pre["depth_penalty"] = np.zeros((h, w), dtype=float)
@@ -223,8 +242,11 @@ def precompute_corridor_arrays(
             land_prox_penalty[override_mask.astype(bool)] = 0.0
 
     tss_in_or_near = np.zeros((h, w), dtype=bool)
+    tss_in_lane = np.zeros((h, w), dtype=bool)
     tss_direction = np.full((h, w), -1.0, dtype=float)
     if context.tss is not None:
+        lane_window = context.tss.lane_mask[y_off:y1, x_off:x1] > 0
+        tss_in_lane = lane_window & mask_bool
         tss_direction = context.tss.direction_field[y_off:y1, x_off:x1].astype(np.float32)
         if tss_radius > 0:
             pad = tss_radius
@@ -242,13 +264,113 @@ def precompute_corridor_arrays(
                 tss_in_or_near = near_window[y_start:y_start + h, x_start:x_start + w]
         else:
             tss_in_or_near = context.tss.lane_mask[y_off:y1, x_off:x1] > 0
-        tss_in_or_near &= mask_bool
+            tss_in_or_near &= mask_bool
 
     pre["blocked_mask"] = blocked_mask
     pre["depth_penalty"] = depth_penalty
     pre["land_prox_penalty"] = land_prox_penalty
     pre["tss_in_or_near"] = tss_in_or_near
+    pre["tss_in_lane"] = tss_in_lane
     pre["tss_direction"] = tss_direction
+
+    corridor_bearing: Optional[np.ndarray] = None
+    if corridor_path and grid is not None and len(corridor_path) > 1:
+        corridor_bearing = np.full((h, w), -1.0, dtype=np.float32)
+        path_mask = np.ones((h, w), dtype=bool)
+        bearings: list[float] = []
+        for i, (px, py) in enumerate(corridor_path):
+            if i == len(corridor_path) - 1:
+                p0x, p0y = corridor_path[i - 1]
+                p1x, p1y = px, py
+            else:
+                p0x, p0y = px, py
+                p1x, p1y = corridor_path[i + 1]
+            lon0, lat0 = grid.xy_to_lonlat(p0x, p0y)
+            lon1, lat1 = grid.xy_to_lonlat(p1x, p1y)
+            bearings.append(bearing_deg(lon0, lat0, lon1, lat1))
+
+        for (px, py), brng in zip(corridor_path, bearings):
+            lx = px - x_off
+            ly = py - y_off
+            if 0 <= ly < h and 0 <= lx < w:
+                corridor_bearing[ly, lx] = brng
+                path_mask[ly, lx] = False
+
+        if not path_mask.all():
+            _, indices = ndimage.distance_transform_edt(path_mask, return_indices=True)
+            idx_y, idx_x = indices
+            corridor_bearing = corridor_bearing[idx_y, idx_x]
+            corridor_bearing[~mask_bool] = -1.0
+            pre["corridor_bearing"] = corridor_bearing
+
+    if (
+        corridor_bearing is not None
+        and context.tss is not None
+        and weights is not None
+        and getattr(weights, "tss_snap_corridor_enabled", False)
+        and grid is not None
+    ):
+        lane_window = tss_in_lane
+        valid = (corridor_bearing >= 0) & (tss_direction >= 0)
+        angle = np.abs((tss_direction.astype(np.float32) - corridor_bearing + 180.0) % 360.0 - 180.0)
+        correct_lane = lane_window & valid & (angle <= weights.tss_max_lane_deviation_deg)
+        wrong_lane = lane_window & valid & (angle > weights.tss_max_lane_deviation_deg)
+        if correct_lane.any():
+            cell_nm = max(min(grid.dx, grid.dy) * 60.0, 1e-6)
+            radius_cells = max(1, int(round(weights.tss_snap_corridor_radius_nm / cell_nm)))
+            dist_correct = ndimage.distance_transform_edt(~correct_lane)
+            tss_band = dist_correct <= radius_cells
+            pre["tss_correct_near"] = tss_band
+            snap_mask = mask_bool.copy()
+            snap_band = tss_band.copy()
+            if wrong_lane.any():
+                dist_wrong = ndimage.distance_transform_edt(~wrong_lane)
+                snap_band &= dist_correct <= dist_wrong
+            snap_band &= ~wrong_lane
+            snap_band &= mask_bool
+            snap_mask[tss_band] = snap_band[tss_band]
+            if corridor_path:
+                path_local: list[tuple[int, int] | None] = []
+                for px, py in corridor_path:
+                    lx, ly = px - x_off, py - y_off
+                    if 0 <= ly < h and 0 <= lx < w:
+                        path_local.append((lx, ly))
+                    else:
+                        path_local.append(None)
+
+                hit_indices = [
+                    i for i, loc in enumerate(path_local)
+                    if loc is not None and snap_mask[loc[1], loc[0]]
+                ]
+                if hit_indices:
+                    first_hit = hit_indices[0]
+                    last_hit = hit_indices[-1]
+                    for i in range(0, first_hit + 1):
+                        loc = path_local[i]
+                        if (
+                            loc is not None
+                            and mask_bool[loc[1], loc[0]]
+                            and not wrong_lane[loc[1], loc[0]]
+                        ):
+                            snap_mask[loc[1], loc[0]] = True
+                    for i in range(last_hit, len(path_local)):
+                        loc = path_local[i]
+                        if (
+                            loc is not None
+                            and mask_bool[loc[1], loc[0]]
+                            and not wrong_lane[loc[1], loc[0]]
+                        ):
+                            snap_mask[loc[1], loc[0]] = True
+                    snap_mask &= mask_bool
+                    start_loc = path_local[0]
+                    end_loc = path_local[-1]
+                    if (
+                        start_loc is not None
+                        and end_loc is not None
+                        and snap_mask[start_loc[1], start_loc[0]]
+                        and snap_mask[end_loc[1], end_loc[0]]
+                    ):
+                        pre["snap_corridor_mask"] = snap_mask
 
     return pre
 

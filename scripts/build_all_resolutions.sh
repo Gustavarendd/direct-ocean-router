@@ -73,17 +73,18 @@ build_resolution() {
 
 # Parse arguments
 if [ $# -eq 0 ]; then
-    # No arguments - build both
+    # No arguments - build 1nm + 0.5nm
     build_resolution "1nm"
     build_resolution "0.5nm"
-elif [ "$1" == "1nm" ] || [ "$1" == "0.5nm" ]; then
+elif [ "$1" == "1nm" ] || [ "$1" == "0.5nm" ] || [ "$1" == "0.25nm" ]; then
     # Build specific resolution
     build_resolution "$1"
 else
-    echo "Usage: $0 [1nm|0.5nm]"
-    echo "  No argument: Build both resolutions"
+    echo "Usage: $0 [1nm|0.5nm|0.25nm]"
+    echo "  No argument: Build 1nm + 0.5nm"
     echo "  1nm:         Build only 1nm resolution"
     echo "  0.5nm:       Build only 0.5nm resolution"
+    echo "  0.25nm:      Build only 0.25nm resolution"
     exit 1
 fi
 
@@ -95,4 +96,6 @@ echo "To switch resolutions at runtime, use:"
 echo "  export OCEAN_ROUTER_RESOLUTION=0.5nm"
 echo "  # or"
 echo "  export OCEAN_ROUTER_RESOLUTION=1nm"
+echo "  # or"
+echo "  export OCEAN_ROUTER_RESOLUTION=0.25nm"
 echo "========================================"

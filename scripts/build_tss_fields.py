@@ -100,7 +100,7 @@ def build_direction_field_from_features(
     lane_features: List[dict], 
     grid: GridSpec, 
     out_path: Path, 
-    influence_nm: float = 2.0
+    influence_nm: float = 0.5
 ) -> None:
     """Build direction field from TSS lane features with pre-computed bearings.
     

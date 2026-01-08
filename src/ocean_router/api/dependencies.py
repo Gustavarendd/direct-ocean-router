@@ -16,9 +16,9 @@ from ocean_router.data.tss import TSSFields
 from ocean_router.routing.costs import CostWeights
 
 
-# Resolution switching: set OCEAN_ROUTER_RESOLUTION env var to "0.5nm" or "1nm" (default)
+# Resolution switching: set OCEAN_ROUTER_RESOLUTION env var to "1nm", "0.5nm", or "0.25nm"
 # Example: OCEAN_ROUTER_RESOLUTION=0.5nm python -m ocean_router.cli.main route ...
-VALID_RESOLUTIONS = {"1nm", "0.5nm"}
+VALID_RESOLUTIONS = {"1nm", "0.5nm", "0.25nm"}
 _resolution_cache: Optional[str] = None
 
 
@@ -138,9 +138,14 @@ def get_cost_weights() -> CostWeights:
     return CostWeights(
         tss_wrong_way_penalty=cfg.tss.wrong_way_penalty,
         tss_alignment_weight=cfg.tss.alignment_weight,
+        tss_off_lane_penalty=cfg.tss.off_lane_penalty,
         tss_lane_crossing_penalty=cfg.tss.lane_crossing_penalty,
         tss_sepzone_crossing_penalty=cfg.tss.sepzone_crossing_penalty,
         tss_sepboundary_crossing_penalty=cfg.tss.sepboundary_crossing_penalty,
+        tss_proximity_check_radius=cfg.tss.proximity_check_radius,
+        tss_max_lane_deviation_deg=cfg.tss.max_lane_deviation_deg,
+        tss_snap_corridor_enabled=cfg.tss.snap_corridor_enabled,
+        tss_snap_corridor_radius_nm=cfg.tss.snap_corridor_radius_nm,
         near_shore_depth_penalty=cfg.depth.near_shore_penalty,
         land_proximity_penalty=cfg.land.proximity_penalty,
         land_proximity_max_distance_cells=cfg.land.max_distance_cells,

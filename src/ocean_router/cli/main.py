@@ -13,7 +13,7 @@ app.add_typer(preprocess_cmd.app, name="preprocess")
 
 @app.command()
 def resolution(
-    res: str = typer.Argument(None, help="Resolution to set (1nm or 0.5nm). Omit to show current."),
+    res: str = typer.Argument(None, help="Resolution to set (1nm, 0.5nm, or 0.25nm). Omit to show current."),
 ) -> None:
     """Show or set the grid resolution for routing.
     
@@ -21,6 +21,7 @@ def resolution(
         ocean-router resolution           # Show current
         ocean-router resolution 0.5nm     # Set to 0.5nm
         ocean-router resolution 1nm       # Set to 1nm
+        ocean-router resolution 0.25nm    # Set to 0.25nm
     """
     from ocean_router.api.dependencies import get_resolution, set_resolution, VALID_RESOLUTIONS
     

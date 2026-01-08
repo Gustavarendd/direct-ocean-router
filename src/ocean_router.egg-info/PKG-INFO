@@ -69,6 +69,9 @@ Build the routing grids from raw data. All scripts support `--resolution` flag f
 
 # Build only 0.5nm (higher resolution, ~4x larger files)
 ./scripts/build_all_resolutions.sh 0.5nm
+
+# Build only 0.25nm (very high resolution, ~4x larger than 0.5nm)
+./scripts/build_all_resolutions.sh 0.25nm
 ```
 
 ### Individual Scripts
@@ -97,6 +100,12 @@ python scripts/build_tss_fields.py \
     --grid configs/grid_0.5nm.json \
     --resolution 0.5nm \
     --tss-geojson data/raw/separation_lanes_with_direction.geojson
+
+# For 0.25nm resolution, use grid_0.25nm.json
+python scripts/build_tss_fields.py \
+    --grid configs/grid_0.25nm.json \
+    --resolution 0.25nm \
+    --tss-geojson data/raw/separation_lanes_with_direction.geojson
 ```
 
 ## Resolution Switching
@@ -110,6 +119,9 @@ export OCEAN_ROUTER_RESOLUTION=1nm
 # Use 0.5nm resolution (43200×21600 cells, ~4x more detail)
 export OCEAN_ROUTER_RESOLUTION=0.5nm
 
+# Use 0.25nm resolution (86400×43200 cells, ~4x more detail vs 0.5nm)
+export OCEAN_ROUTER_RESOLUTION=0.25nm
+
 # Start server with specific resolution
 OCEAN_ROUTER_RESOLUTION=0.5nm uvicorn ocean_router.api.main:app --reload
 ```
@@ -122,6 +134,7 @@ OCEAN_ROUTER_RESOLUTION=0.5nm uvicorn ocean_router.api.main:app --reload
 | ---------- | ----------- | --------- | ---------- | ---------- | -------- |
 | 1nm        | 21600×10800 | ~220 MB   | ~445 MB    | ~890 MB    | ~2.7 GB  |
 | 0.5nm      | 43200×21600 | ~890 MB   | ~1.8 GB    | ~3.6 GB    | ~10.8 GB |
+| 0.25nm     | 86400×43200 | ~3.6 GB   | ~7.2 GB    | ~14.4 GB   | ~43.2 GB |
 
 ## Pipeline overview
 
@@ -147,6 +160,7 @@ python -m ocean_router.cli.main info
 # Show/set resolution
 python -m ocean_router.cli.main resolution         # Show current
 python -m ocean_router.cli.main resolution 0.5nm   # Set to 0.5nm
+python -m ocean_router.cli.main resolution 0.25nm  # Set to 0.25nm
 
 # Compute a route
 python -m ocean_router.cli.main route --start "lat,lon" --end "lat,lon" --draft 9.5 --margin 2.0
@@ -170,4 +184,14 @@ pip install -e . && uvicorn ocean_router.api.main:app --reload
 
 # Start with 0.5nm resolution
 OCEAN_ROUTER_RESOLUTION=0.5nm uvicorn ocean_router.api.main:app --reload
+
+# Start with 0.25nm resolution
+OCEAN_ROUTER_RESOLUTION=0.25nm uvicorn ocean_router.api.main:app --reload
+```
+
+## create Html visualizations
+
+```bash
+# Generate HTML visualization of a route
+python scripts/visualize_route_html.py --route-json route.json -o route_map.html
 ```

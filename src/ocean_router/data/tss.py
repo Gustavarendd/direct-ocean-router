@@ -54,6 +54,7 @@ class TSSFields:
         prev_x: int = None,
         goal_bearing: float = None,
         max_lane_deviation_deg: float = 45.0,
+        proximity_check_radius: int = 2,
     ) -> float:
         """Calculate alignment penalty, checking along the entire path.
         
@@ -67,7 +68,7 @@ class TSSFields:
         if prev_y is not None and prev_x is not None:
             penalty = self._alignment_along_path(
                 prev_y, prev_x, y, x, move_bearing, wrong_way_penalty, alignment_weight, 
-                goal_bearing, max_lane_deviation_deg
+                goal_bearing, max_lane_deviation_deg, proximity_check_radius
             )
             return penalty
         

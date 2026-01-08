@@ -17,9 +17,14 @@ from ocean_router.data.land import LandMask
 class CostWeights:
     tss_wrong_way_penalty: float = 10000.0  # Going wrong way in lane - dangerous
     tss_alignment_weight: float = 1.5   # Modest preference for using TSS lanes correctly
+    tss_off_lane_penalty: float = 1.0
     tss_lane_crossing_penalty: float = 5.0  # Small penalty for exiting lanes
     tss_sepzone_crossing_penalty: float = 10000.0  # High penalty for separation zones
     tss_sepboundary_crossing_penalty: float = 5000.0  # Very high penalty for crossing boundary lines
+    tss_proximity_check_radius: int = 2
+    tss_max_lane_deviation_deg: float = 45.0
+    tss_snap_corridor_enabled: bool = True
+    tss_snap_corridor_radius_nm: float = 3.0
     near_shore_depth_penalty: float = 5.0
     land_proximity_penalty: float = 100.0  # Strong penalty for being close to land
     land_proximity_max_distance_cells: int = 50  # Max distance to check for land proximity
@@ -32,9 +37,14 @@ class CostWeights:
         weights = cls(
             tss_wrong_way_penalty=config.get("tss_wrong_way_penalty", 10000.0),
             tss_alignment_weight=config.get("tss_alignment_weight", 1.5),
+            tss_off_lane_penalty=config.get("tss_off_lane_penalty", 1.0),
             tss_lane_crossing_penalty=config.get("tss_lane_crossing_penalty", 5.0),
             tss_sepzone_crossing_penalty=config.get("tss_sepzone_crossing_penalty", 10000.0),
             tss_sepboundary_crossing_penalty=config.get("tss_sepboundary_crossing_penalty", 5000.0),
+            tss_proximity_check_radius=config.get("tss_proximity_check_radius", 2),
+            tss_max_lane_deviation_deg=config.get("tss_max_lane_deviation_deg", 45.0),
+            tss_snap_corridor_enabled=config.get("tss_snap_corridor_enabled", True),
+            tss_snap_corridor_radius_nm=config.get("tss_snap_corridor_radius_nm", 3.0),
             near_shore_depth_penalty=config.get("near_shore_depth_penalty", 5.0),
             land_proximity_penalty=config.get("land_proximity_penalty", 100.0),
             density_bias=config.get("density_bias", -2.0),
@@ -65,6 +75,7 @@ class CostContext:
         weights: CostWeights,
         prev_y: Optional[int] = None,
         prev_x: Optional[int] = None,
+        goal_bearing: Optional[float] = None,
     ) -> float:
         """Calculate cost to move to cell (y, x).
         
@@ -72,6 +83,7 @@ class CostContext:
             min_draft: Minimum required water depth in meters (positive value)
             prev_y: Previous cell y coordinate (for boundary crossing detection)
             prev_x: Previous cell x coordinate (for boundary crossing detection)
+            goal_bearing: Optional bearing from the current step toward the goal.
         """
         step_cost = move_cost_nm(self.grid_dx, self.grid_dy, lat)
         penalty = 0.0
@@ -79,14 +91,25 @@ class CostContext:
         if self.land and weights.land_proximity_penalty > 0:
             penalty += self.land.proximity_penalty(y, x, max_distance_cells=12, penalty_weight=weights.land_proximity_penalty)
         if self.tss:
+            if weights.tss_off_lane_penalty > 0:
+                in_near = self.tss.in_or_near_lane(
+                    y, x, radius=weights.tss_proximity_check_radius
+                )
+                if in_near and not self.tss.in_lane(y, x):
+                    wrong_only = self.tss._check_nearby_wrong_way(
+                        y, x, move_bearing, radius=weights.tss_proximity_check_radius
+                    )
+                    if not wrong_only:
+                        penalty += weights.tss_off_lane_penalty
             penalty += self.tss.alignment_penalty(
                 y, x, move_bearing, 
                 weights.tss_wrong_way_penalty, 
                 weights.tss_alignment_weight,
                 prev_y=prev_y, 
                 prev_x=prev_x,
-                goal_bearing=self.goal_bearing,
-                max_lane_deviation_deg=45.0
+                goal_bearing=goal_bearing if goal_bearing is not None else self.goal_bearing,
+                max_lane_deviation_deg=weights.tss_max_lane_deviation_deg,
+                proximity_check_radius=weights.tss_proximity_check_radius,
             )
             # Add boundary crossing penalties
             if prev_y is not None and prev_x is not None:
