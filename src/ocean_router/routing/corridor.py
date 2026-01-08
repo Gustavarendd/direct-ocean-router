@@ -133,6 +133,8 @@ def build_corridor_with_arrays(
       - tss_in_or_near: bool array
       - tss_in_lane: bool array
       - tss_direction: float array (or -1)
+      - tss_sepzone: bool array
+      - tss_sepboundary: bool array
       - corridor_bearing: float array (or -1)
       - snap_corridor_mask: bool array
       - tss_correct_near: bool array
@@ -244,10 +246,16 @@ def precompute_corridor_arrays(
     tss_in_or_near = np.zeros((h, w), dtype=bool)
     tss_in_lane = np.zeros((h, w), dtype=bool)
     tss_direction = np.full((h, w), -1.0, dtype=float)
+    tss_sepzone = np.zeros((h, w), dtype=bool)
+    tss_sepboundary = np.zeros((h, w), dtype=bool)
     if context.tss is not None:
         lane_window = context.tss.lane_mask[y_off:y1, x_off:x1] > 0
         tss_in_lane = lane_window & mask_bool
         tss_direction = context.tss.direction_field[y_off:y1, x_off:x1].astype(np.float32)
+        if context.tss.sepzone_mask is not None:
+            tss_sepzone = (context.tss.sepzone_mask[y_off:y1, x_off:x1] > 0) & mask_bool
+        if context.tss.sepboundary_mask is not None:
+            tss_sepboundary = (context.tss.sepboundary_mask[y_off:y1, x_off:x1] > 0) & mask_bool
         if tss_radius > 0:
             pad = tss_radius
             lane_mask = context.tss.lane_mask
@@ -272,6 +280,8 @@ def precompute_corridor_arrays(
     pre["tss_in_or_near"] = tss_in_or_near
     pre["tss_in_lane"] = tss_in_lane
     pre["tss_direction"] = tss_direction
+    pre["tss_sepzone"] = tss_sepzone
+    pre["tss_sepboundary"] = tss_sepboundary
 
     corridor_bearing: Optional[np.ndarray] = None
     if corridor_path and grid is not None and len(corridor_path) > 1:
