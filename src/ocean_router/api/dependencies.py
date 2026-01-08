@@ -112,6 +112,7 @@ def get_tss() -> Optional[TSSFields]:
     dir_field = tss_dir / f"tss_dir_field_{suffix}.npy"
     sep_mask = tss_dir / f"tss_sepzone_mask_{suffix}.npy"
     sep_boundary = tss_dir / f"tss_sepboundary_mask_{suffix}.npy"
+    lane_graph = tss_dir / f"tss_lane_graph_{suffix}.npy"
     
     if not lane_mask.exists() or not dir_field.exists():
         return None
@@ -121,6 +122,7 @@ def get_tss() -> Optional[TSSFields]:
         direction_field_path=dir_field,
         sepzone_mask_path=sep_mask if sep_mask.exists() else None,
         sepboundary_mask_path=sep_boundary if sep_boundary.exists() else None,
+        lane_graph_path=lane_graph if lane_graph.exists() else None,
     )
 
 

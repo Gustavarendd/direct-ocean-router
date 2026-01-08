@@ -165,6 +165,39 @@ def build_direction_field_from_features(
     print(f"  Direction field: {valid_cells:,} cells with TSS direction")
 
 
+def build_lane_graph_segments(
+    lane_features: List[dict],
+    grid: GridSpec,
+    out_path: Path,
+) -> None:
+    """Build a lane graph segment list from lane centerlines."""
+    segments: List[Tuple[int, int, int, int]] = []
+    for feat in lane_features:
+        geom = shape(feat["geometry"])
+        if geom.geom_type == "LineString":
+            lines = [geom]
+        elif geom.geom_type == "MultiLineString":
+            lines = list(geom.geoms)
+        else:
+            continue
+
+        for line in lines:
+            coords = list(line.coords)
+            for (lon0, lat0), (lon1, lat1) in zip(coords[:-1], coords[1:]):
+                x0, y0 = grid.lonlat_to_xy(lon0, lat0)
+                x1, y1 = grid.lonlat_to_xy(lon1, lat1)
+                segments.append((x0, y0, x1, y1))
+
+    if not segments:
+        print("  Warning: No lane graph segments built")
+        save_memmap(out_path, np.zeros((0, 4), dtype=np.int32), dtype=np.int32)
+        return
+
+    arr = np.array(segments, dtype=np.int32)
+    save_memmap(out_path, arr, dtype=np.int32)
+    print(f"  Lane graph: {len(segments):,} segments saved")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build TSS fields from GeoJSON with flow directions")
     parser.add_argument("--grid", type=Path, default=Path("configs/grid_1nm.json"))
@@ -270,6 +303,12 @@ def main() -> None:
     build_direction_field_from_features(
         lane_features, grid, args.outdir / f"tss_dir_field_{suffix}.npy", 
         influence_nm=args.influence_nm
+    )
+
+    # Build lane graph segments for snapping
+    print("Building lane graph...")
+    build_lane_graph_segments(
+        lane_features, grid, args.outdir / f"tss_lane_graph_{suffix}.npy"
     )
 
     # Clean up overlaps - proper layering:

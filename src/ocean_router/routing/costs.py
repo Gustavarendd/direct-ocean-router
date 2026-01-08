@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 import numpy as np
 
@@ -11,6 +11,9 @@ from ocean_router.data.bathy import Bathy
 from ocean_router.data.tss import TSSFields
 from ocean_router.data.density import Density
 from ocean_router.data.land import LandMask
+
+if TYPE_CHECKING:
+    from ocean_router.core.grid import GridSpec
 
 
 @dataclass
@@ -25,6 +28,7 @@ class CostWeights:
     tss_max_lane_deviation_deg: float = 45.0
     tss_snap_corridor_enabled: bool = True
     tss_snap_corridor_radius_nm: float = 3.0
+    tss_wrong_way_hard: bool = False
     near_shore_depth_penalty: float = 5.0
     land_proximity_penalty: float = 100.0  # Strong penalty for being close to land
     land_proximity_max_distance_cells: int = 50  # Max distance to check for land proximity
@@ -45,6 +49,7 @@ class CostWeights:
             tss_max_lane_deviation_deg=config.get("tss_max_lane_deviation_deg", 45.0),
             tss_snap_corridor_enabled=config.get("tss_snap_corridor_enabled", True),
             tss_snap_corridor_radius_nm=config.get("tss_snap_corridor_radius_nm", 3.0),
+            tss_wrong_way_hard=config.get("tss_wrong_way_hard", False),
             near_shore_depth_penalty=config.get("near_shore_depth_penalty", 5.0),
             land_proximity_penalty=config.get("land_proximity_penalty", 100.0),
             density_bias=config.get("density_bias", -2.0),
@@ -63,6 +68,10 @@ class CostContext:
     grid_dy: float
     goal_bearing: Optional[float] = None  # Overall bearing to goal for TSS filtering
     land: Optional[LandMask] = None  # Land mask for proximity penalties
+    grid: Optional["GridSpec"] = None
+    tss_wrong_way_hard: bool = False
+    tss_snap_lane_graph: bool = False
+    tss_disable_lane_smoothing: bool = False
 
     def move_cost(
         self,
@@ -91,6 +100,9 @@ class CostContext:
         if self.land and weights.land_proximity_penalty > 0:
             penalty += self.land.proximity_penalty(y, x, max_distance_cells=12, penalty_weight=weights.land_proximity_penalty)
         if self.tss:
+            if self.tss_wrong_way_hard and prev_y is not None and prev_x is not None:
+                if self.tss.line_goes_wrong_way(prev_y, prev_x, y, x, grid=self.grid):
+                    return float("inf")
             if weights.tss_off_lane_penalty > 0:
                 in_near = self.tss.in_or_near_lane(
                     y, x, radius=weights.tss_proximity_check_radius

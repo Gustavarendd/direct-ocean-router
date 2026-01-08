@@ -92,6 +92,9 @@ class CorridorAStar:
                     continue
                 if context.blocked(ny, nx, min_depth):
                     continue
+                if context.tss and context.tss_wrong_way_hard:
+                    if context.tss.line_goes_wrong_way(cur_y, cur_x, ny, nx, grid=context.grid):
+                        continue
                 move_bearing = bearing_deg(cur_lon, cur_lat, *self.grid.xy_to_lonlat(nx, ny))
                 prev_b = prev_bearing.get(current)
                 tentative_g = g_score[current] + context.move_cost(

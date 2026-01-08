@@ -1245,6 +1245,11 @@ class CoarseToFineAStar:
                 # Use precomputed blocked mask
                 if blocked_mask[ny, nx]:
                     continue
+                if context.tss and context.tss_wrong_way_hard:
+                    gcx = x_off + cx
+                    gcy = y_off + cy
+                    if context.tss.line_goes_wrong_way(gcy, gcx, gny, gnx, grid=context.grid):
+                        continue
                 
                 move_bearing = math.degrees(math.atan2(dx, -dy)) % 360
                 step_nm = step_nms[idx]
@@ -1364,11 +1369,21 @@ class CoarseToFineAStar:
             if context.tss is not None:
                 x0, y0 = p0
                 x1, y1 = p1
-                if context.tss.line_crosses_boundary(y0, x0, y1, x1):
+                if context.tss_disable_lane_smoothing and context.tss.line_intersects_lane(y0, x0, y1, x1):
                     return False
+                if context.tss_snap_lane_graph and context.tss.line_intersects_lane(y0, x0, y1, x1):
+                    (sx0, sy0), (sx1, sy1) = context.tss.snap_segment_to_lane(p0, p1)
+                    if context.tss.line_crosses_boundary(sy0, sx0, sy1, sx1):
+                        return False
+                else:
+                    if context.tss.line_crosses_boundary(y0, x0, y1, x1):
+                        return False
             return True
         
-        return _smooth_path_with_validator(path_xy, line_is_valid, max_skip)
+        smoothed = _smooth_path_with_validator(path_xy, line_is_valid, max_skip)
+        if context.tss is not None and context.tss_snap_lane_graph:
+            smoothed = context.tss.snap_path_xy(smoothed)
+        return smoothed
 
 
 class FastCorridorAStar:
@@ -1486,11 +1501,20 @@ class FastCorridorAStar:
                     if context.tss is not None:
                         x0, y0 = p0
                         x1, y1 = p1
-                        if context.tss.line_crosses_boundary(y0, x0, y1, x1):
+                        if context.tss_disable_lane_smoothing and context.tss.line_intersects_lane(y0, x0, y1, x1):
                             return False
+                        if context.tss_snap_lane_graph and context.tss.line_intersects_lane(y0, x0, y1, x1):
+                            (sx0, sy0), (sx1, sy1) = context.tss.snap_segment_to_lane(p0, p1)
+                            if context.tss.line_crosses_boundary(sy0, sx0, sy1, sx1):
+                                return False
+                        else:
+                            if context.tss.line_crosses_boundary(y0, x0, y1, x1):
+                                return False
                     return True
                 
                 smoothed = _smooth_path_with_validator(path_indices, line_is_valid)
+                if context.tss is not None and context.tss_snap_lane_graph:
+                    smoothed = context.tss.snap_path_xy(smoothed)
                 
                 lonlats = [self.grid.xy_to_lonlat(px, py) for px, py in smoothed]
                 return AStarResult(
@@ -1544,6 +1568,10 @@ class FastCorridorAStar:
                         time_blocked_check += time.perf_counter() - t0
                         continue
                 time_blocked_check += time.perf_counter() - t0
+
+                if context.tss and context.tss_wrong_way_hard:
+                    if context.tss.line_goes_wrong_way(gy_cur, gx_cur, gny, gnx, grid=context.grid):
+                        continue
                 
                 t0 = time.perf_counter()
                 move_bearing = math.degrees(math.atan2(dx, -dy)) % 360

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace
 from typing import List, Tuple, Optional
 from fastapi import APIRouter, Depends, HTTPException
 
@@ -140,6 +141,16 @@ def compute_route(
     t0 = time.perf_counter()
     cfg = get_config()
     print(f"[TIMING] Config load: {(time.perf_counter() - t0)*1000:.1f}ms")
+
+    precision_mode = cfg.mode.mode == "precision"
+    tss_wrong_way_hard = precision_mode and cfg.mode.precision_wrong_way_hard
+    tss_snap_lane_graph = precision_mode and cfg.mode.precision_snap_lane_graph
+    tss_disable_lane_smoothing = precision_mode and cfg.mode.precision_disable_lane_smoothing
+    if precision_mode:
+        weights = replace(
+            weights,
+            tss_max_lane_deviation_deg=cfg.mode.precision_tss_max_lane_deviation_deg,
+        )
     
     # Use config defaults if not specified
     if corridor_width_nm is None:
@@ -175,6 +186,10 @@ def compute_route(
             grid_dy=grid.dy,
             goal_bearing=goal_bearing,
             land=land,
+            grid=grid,
+            tss_wrong_way_hard=tss_wrong_way_hard,
+            tss_snap_lane_graph=tss_snap_lane_graph,
+            tss_disable_lane_smoothing=tss_disable_lane_smoothing,
         )
         print(f"[TIMING] CostContext creation: {(time.perf_counter() - t0)*1000:.1f}ms")
         print(f"[ROUTE] CostContext created with land={'present' if land else 'None'}")
@@ -518,6 +533,10 @@ def compute_route(
                         grid_dy=context.grid_dy,
                         goal_bearing=context.goal_bearing,
                         land=context.land,
+                        grid=grid,
+                        tss_wrong_way_hard=False,
+                        tss_snap_lane_graph=False,
+                        tss_disable_lane_smoothing=False,
                     )
                     t0_r = time.perf_counter()
                     r_corridor, r_x_off, r_y_off, r_pre = build_corridor_with_arrays(
@@ -550,6 +569,10 @@ def compute_route(
                         grid_dy=context.grid_dy,
                         goal_bearing=context.goal_bearing,
                         land=None,
+                        grid=grid,
+                        tss_wrong_way_hard=tss_wrong_way_hard,
+                        tss_snap_lane_graph=tss_snap_lane_graph,
+                        tss_disable_lane_smoothing=tss_disable_lane_smoothing,
                     )
                     t0_r2 = time.perf_counter()
                     r2_corridor, r2_x_off, r2_y_off, r2_pre = build_corridor_with_arrays(
@@ -582,6 +605,10 @@ def compute_route(
                         grid_dy=context.grid_dy,
                         goal_bearing=context.goal_bearing,
                         land=None,
+                        grid=grid,
+                        tss_wrong_way_hard=False,
+                        tss_snap_lane_graph=False,
+                        tss_disable_lane_smoothing=False,
                     )
                     t0_r3 = time.perf_counter()
                     r3_corridor, r3_x_off, r3_y_off, r3_pre = build_corridor_with_arrays(
@@ -715,6 +742,8 @@ def compute_route(
             preserve_points=None,
             max_simplify_nm=adaptive_max_simplify,
             min_land_distance_cells=min_land_dist_cells,
+            snap_to_lane_graph=tss_snap_lane_graph,
+            disable_lane_smoothing=tss_disable_lane_smoothing,
         )
         t_simplify = time.perf_counter() - t0
         print(f"[SIMPLIFY] {len(result.path)} -> {len(path)} waypoints")
