@@ -111,6 +111,51 @@ def build_corridor(
     return mask, x_off, y_off
 
 
+def build_corridor_from_path(
+    grid: GridSpec,
+    corridor_path: Sequence[Tuple[int, int]],
+    land_mask: Optional[np.ndarray] = None,
+    width_nm: float = 50.0,
+    canals: Optional[Sequence["Canal"]] = None,
+) -> Tuple[np.ndarray, int, int]:
+    """Build a corridor mask around a backbone path (grid coordinates)."""
+    if not corridor_path:
+        return np.zeros((1, 1), dtype=np.uint8), 0, 0
+
+    cell_nm = max(grid.dx * 60.0, 1e-6)
+    width_cells = max(2, int(round(width_nm / cell_nm)))
+    xs = [p[0] for p in corridor_path]
+    ys = [p[1] for p in corridor_path]
+
+    padding = width_cells + 4
+    x_min = max(0, min(xs) - padding)
+    x_max = min(grid.width, max(xs) + padding + 1)
+    y_min = max(0, min(ys) - padding)
+    y_max = min(grid.height, max(ys) + padding + 1)
+
+    h, w = y_max - y_min, x_max - x_min
+    mask = np.zeros((h, w), dtype=np.uint8)
+
+    for px, py in corridor_path:
+        lx, ly = px - x_min, py - y_min
+        y0 = max(0, ly - width_cells)
+        y1 = min(h, ly + width_cells + 1)
+        x0 = max(0, lx - width_cells)
+        x1 = min(w, lx + width_cells + 1)
+        mask[y0:y1, x0:x1] = 1
+
+    if land_mask is not None:
+        land_region = land_mask[y_min:y_max, x_min:x_max]
+        mask = mask & (land_region == 0)
+
+    if canals:
+        canal_mask = canal_mask_window(canals, grid, x_min, y_min, h, w)
+        if canal_mask.size:
+            mask[canal_mask > 0] = 1
+
+    return mask, x_min, y_min
+
+
 def build_corridor_with_arrays(
     grid: GridSpec,
     start: Tuple[float, float],
@@ -122,6 +167,7 @@ def build_corridor_with_arrays(
     weights: Optional[object] = None,
     canals: Optional[Sequence["Canal"]] = None,
     corridor_path: Optional[Sequence[Tuple[int, int]]] = None,
+    corridor_backbone: Optional[Sequence[Tuple[int, int]]] = None,
 ) -> Tuple[np.ndarray, int, int, Dict[str, Any]]:
     """Build corridor and precompute per-corridor arrays to speed up A*.
 
@@ -137,14 +183,23 @@ def build_corridor_with_arrays(
       - snap_corridor_mask: bool array
       - tss_correct_near: bool array
     """
-    mask, x_off, y_off = build_corridor(
-        grid,
-        start,
-        end,
-        land_mask=land_mask,
-        width_nm=width_nm,
-        canals=canals,
-    )
+    if corridor_backbone:
+        mask, x_off, y_off = build_corridor_from_path(
+            grid,
+            corridor_backbone,
+            land_mask=land_mask,
+            width_nm=width_nm,
+            canals=canals,
+        )
+    else:
+        mask, x_off, y_off = build_corridor(
+            grid,
+            start,
+            end,
+            land_mask=land_mask,
+            width_nm=width_nm,
+            canals=canals,
+        )
     canal_mask = None
     if canals:
         canal_mask = canal_mask_window(canals, grid, x_off, y_off, mask.shape[0], mask.shape[1])
@@ -153,6 +208,49 @@ def build_corridor_with_arrays(
         sx, sy = grid.lonlat_to_xy(start[0], start[1])
         gx, gy = grid.lonlat_to_xy(end[0], end[1])
         corridor_path = [(sx, sy), (gx, gy)]
+
+    sx, sy = grid.lonlat_to_xy(start[0], start[1])
+    gx, gy = grid.lonlat_to_xy(end[0], end[1])
+    sx_local = sx - x_off
+    sy_local = sy - y_off
+    gx_local = gx - x_off
+    gy_local = gy - y_off
+    if 0 <= sy_local < mask.shape[0] and 0 <= sx_local < mask.shape[1]:
+        mask[sy_local, sx_local] = 1
+    if 0 <= gy_local < mask.shape[0] and 0 <= gx_local < mask.shape[1]:
+        mask[gy_local, gx_local] = 1
+
+    if (
+        context is not None
+        and weights is not None
+        and getattr(weights, "tss_lane_graph_lock_enabled", False)
+        and context.tss is not None
+        and context.tss.lane_graph is not None
+        and mask.size
+    ):
+        from ocean_router.routing.lane_graph import lane_graph_mask_window
+
+        cell_nm = max(grid.dx * 60.0, 1e-6)
+        radius_cells = max(1, int(round(weights.tss_lane_graph_lock_radius_nm / cell_nm)))
+        lane_graph_mask = lane_graph_mask_window(
+            context.tss.lane_graph,
+            grid,
+            x_off,
+            y_off,
+            mask.shape[0],
+            mask.shape[1],
+            radius_cells,
+        )
+        if lane_graph_mask.any():
+            y1 = y_off + mask.shape[0]
+            x1 = x_off + mask.shape[1]
+            lane_window = context.tss.lane_mask[y_off:y1, x_off:x1] > 0
+            lock_zone = lane_window & (mask > 0)
+            mask[lock_zone] = lane_graph_mask[lock_zone].astype(np.uint8)
+            if 0 <= sy_local < mask.shape[0] and 0 <= sx_local < mask.shape[1]:
+                mask[sy_local, sx_local] = 1
+            if 0 <= gy_local < mask.shape[0] and 0 <= gx_local < mask.shape[1]:
+                mask[gy_local, gx_local] = 1
 
     pre = precompute_corridor_arrays(
         mask,

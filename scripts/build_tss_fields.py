@@ -16,6 +16,7 @@ from rasterio import features
 import rasterio
 
 from ocean_router.core.grid import GridSpec
+from ocean_router.core.geodesy import angle_diff_deg, bearing_deg, rhumb_distance_nm
 from ocean_router.core.memmaps import save_memmap
 
 
@@ -165,6 +166,87 @@ def build_direction_field_from_features(
     print(f"  Direction field: {valid_cells:,} cells with TSS direction")
 
 
+def build_lane_graph(lane_features: List[dict], out_path: Path) -> None:
+    """Build a lane-graph from lane centerlines with flow bearings."""
+    nodes: list[tuple[float, float]] = []
+    node_index: dict[tuple[float, float], int] = {}
+    edges_u: list[int] = []
+    edges_v: list[int] = []
+    edges_weight: list[float] = []
+    edges_flow_bearing: list[float] = []
+    edges_length_nm: list[float] = []
+
+    def _node_id(lon: float, lat: float) -> int:
+        key = (lon, lat)
+        idx = node_index.get(key)
+        if idx is None:
+            idx = len(nodes)
+            node_index[key] = idx
+            nodes.append(key)
+        return idx
+
+    def _add_edge(u: int, v: int, flow_bearing: float, length_nm: float, align_angle: float) -> None:
+        edges_u.append(u)
+        edges_v.append(v)
+        edges_flow_bearing.append(flow_bearing)
+        edges_length_nm.append(length_nm)
+        edges_weight.append(length_nm * (1.0 + align_angle / 90.0))
+
+    edges_added = 0
+    for feat in lane_features:
+        flow_bearing = get_flow_bearing(feat)
+        if flow_bearing is None:
+            continue
+        geom = shape(feat["geometry"])
+        if geom.geom_type == "LineString":
+            lines = [geom]
+        elif geom.geom_type == "MultiLineString":
+            lines = list(geom.geoms)
+        else:
+            continue
+
+        for line in lines:
+            coords = list(line.coords)
+            if len(coords) < 2:
+                continue
+            for i in range(len(coords) - 1):
+                lon0, lat0 = coords[i]
+                lon1, lat1 = coords[i + 1]
+                length_nm = rhumb_distance_nm(lon0, lat0, lon1, lat1)
+                if length_nm <= 0:
+                    continue
+                seg_bearing = bearing_deg(lon0, lat0, lon1, lat1)
+                align = angle_diff_deg(seg_bearing, flow_bearing)
+                u = _node_id(lon0, lat0)
+                v = _node_id(lon1, lat1)
+                if align <= 90:
+                    _add_edge(u, v, flow_bearing, length_nm, align)
+                    edges_added += 1
+                else:
+                    rev_bearing = (seg_bearing + 180.0) % 360.0
+                    rev_align = angle_diff_deg(rev_bearing, flow_bearing)
+                    if rev_align <= 90:
+                        _add_edge(v, u, flow_bearing, length_nm, rev_align)
+                        edges_added += 1
+
+    if not nodes or not edges_u:
+        print("  Warning: No lane graph edges built")
+        return
+
+    nodes_arr = np.array(nodes, dtype=np.float64)
+    np.savez(
+        out_path,
+        nodes_lon=nodes_arr[:, 0],
+        nodes_lat=nodes_arr[:, 1],
+        edges_u=np.array(edges_u, dtype=np.int32),
+        edges_v=np.array(edges_v, dtype=np.int32),
+        edges_weight=np.array(edges_weight, dtype=np.float32),
+        edges_flow_bearing=np.array(edges_flow_bearing, dtype=np.float32),
+        edges_length_nm=np.array(edges_length_nm, dtype=np.float32),
+    )
+    print(f"  Lane graph: {len(nodes)} nodes, {edges_added} directed edges")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build TSS fields from GeoJSON with flow directions")
     parser.add_argument("--grid", type=Path, default=Path("configs/grid_1nm.json"))
@@ -270,6 +352,12 @@ def main() -> None:
     build_direction_field_from_features(
         lane_features, grid, args.outdir / f"tss_dir_field_{suffix}.npy", 
         influence_nm=args.influence_nm
+    )
+
+    print("Building lane graph...")
+    build_lane_graph(
+        lane_features,
+        args.outdir / f"tss_lane_graph_{suffix}.npz",
     )
 
     # Clean up overlaps - proper layering:

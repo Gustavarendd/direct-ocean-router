@@ -58,6 +58,14 @@ tss:
   snap_corridor_enabled: true
   snap_corridor_radius_nm: 1.0
 
+  # Lane-graph macro routing
+  lane_graph_macro_enabled: true
+  lane_graph_snap_max_nm: 20.0
+
+  # Lane-graph locking for precision mode (restrict corridor to lane edges)
+  lane_graph_lock_enabled: false
+  lane_graph_lock_radius_nm: 0.5
+
 # ----------------------------------------------------------------------
 # Land & Depth Settings
 # ----------------------------------------------------------------------
