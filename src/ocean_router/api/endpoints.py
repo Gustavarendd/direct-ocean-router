@@ -838,7 +838,7 @@ def route(
     canals: List[Canal] = Depends(get_canals),
     weights: CostWeights = Depends(get_cost_weights),
 ) -> RouteResponse:
-    """Compute a ship route between two points.
+    """Compute a ship route between waypoints or two points.
     
     Coordinates are expected as [lat, lon] format.
     """
@@ -846,18 +846,97 @@ def route(
     print(f"\n[TIMING] ========== ROUTE REQUEST START ==========")
     
     cfg = get_config()
+    precision_mode = cfg.mode.mode == "precision"
+    tss_snap_lane_graph = precision_mode and cfg.mode.precision_snap_lane_graph
+    tss_disable_lane_smoothing = precision_mode and cfg.mode.precision_disable_lane_smoothing
     
     # Convert input from [lat, lon] to internal [lon, lat] format
     t0 = time.perf_counter()
-    start = (req.start[1], req.start[0])  # (lon, lat)
-    end = (req.end[1], req.end[0])  # (lon, lat)
+    if req.waypoints:
+        if len(req.waypoints) < 2:
+            raise HTTPException(status_code=400, detail="At least two waypoints are required.")
+        lonlat_waypoints = [(lon, lat) for lat, lon in req.waypoints]
+    else:
+        if req.start is None or req.end is None:
+            raise HTTPException(status_code=400, detail="Either waypoints or start/end must be provided.")
+        lonlat_waypoints = [(req.start[1], req.start[0]), (req.end[1], req.end[0])]
     draft_m = req.draft_m if req.draft_m else 10.0
     corridor_width = req.corridor_width_nm if req.corridor_width_nm else cfg.corridor.width_short_nm
     print(f"[TIMING] Request parsing: {(time.perf_counter() - t0)*1000:.1f}ms")
-    
-    path, distance, warnings = compute_route(
-        start, end, grid, bathy, land, tss, canals, weights, draft_m, corridor_width
-    )
+
+    warnings: List[str] = []
+    if len(lonlat_waypoints) == 2:
+        path, distance, warnings = compute_route(
+            lonlat_waypoints[0],
+            lonlat_waypoints[1],
+            grid,
+            bathy,
+            land,
+            tss,
+            canals,
+            weights,
+            draft_m,
+            corridor_width,
+        )
+    else:
+        stitched_path: List[Tuple[float, float]] = []
+        for idx in range(len(lonlat_waypoints) - 1):
+            segment_path, _, segment_warnings = compute_route(
+                lonlat_waypoints[idx],
+                lonlat_waypoints[idx + 1],
+                grid,
+                bathy,
+                land,
+                tss,
+                canals,
+                weights,
+                draft_m,
+                corridor_width,
+            )
+            warnings.extend(segment_warnings)
+            if not stitched_path:
+                stitched_path.extend(segment_path)
+            else:
+                stitched_path.extend(segment_path[1:])
+
+        min_land_dist_cells = max(2, int(cfg.land.min_distance_nm / (grid.dx * 60)))
+        overall_dist = rhumb_distance_nm(
+            lonlat_waypoints[0][0],
+            lonlat_waypoints[0][1],
+            lonlat_waypoints[-1][0],
+            lonlat_waypoints[-1][1],
+        )
+        adaptive_max_simplify = max(cfg.simplify.max_simplify_nm, min(1000.0, overall_dist * 0.5))
+        path, _ = tss_aware_simplify(
+            stitched_path,
+            grid,
+            tss,
+            land,
+            preserve_points=lonlat_waypoints,
+            max_simplify_nm=adaptive_max_simplify,
+            min_land_distance_cells=min_land_dist_cells,
+            snap_to_lane_graph=tss_snap_lane_graph,
+            disable_lane_smoothing=tss_disable_lane_smoothing,
+        )
+        if tss is not None:
+            path, num_repairs = repair_tss_violations(
+                path,
+                grid,
+                tss,
+                land,
+                min_land_dist_cells,
+                bypass_offsets_nm=cfg.bypass.offset_distances_nm,
+            )
+            if num_repairs > 0:
+                print(f"[TSS REPAIR] Made {num_repairs} repairs to avoid wrong-way TSS segments")
+        distance = 0.0
+        for i in range(len(path) - 1):
+            distance += rhumb_distance_nm(
+                path[i][0],
+                path[i][1],
+                path[i + 1][0],
+                path[i + 1][1],
+            )
     
     # Convert output path back to [lat, lon] format
     t0 = time.perf_counter()
