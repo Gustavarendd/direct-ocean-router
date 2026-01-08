@@ -40,6 +40,10 @@ class TSSConfig:
     max_lane_deviation_deg: float = 45.0
     snap_corridor_enabled: bool = True
     snap_corridor_radius_nm: float = 3.0
+    lane_graph_macro_enabled: bool = True
+    lane_graph_snap_max_nm: float = 20.0
+    lane_graph_lock_enabled: bool = False
+    lane_graph_lock_radius_nm: float = 0.5
 
 
 @dataclass

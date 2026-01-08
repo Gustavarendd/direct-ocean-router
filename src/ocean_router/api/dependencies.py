@@ -112,7 +112,7 @@ def get_tss() -> Optional[TSSFields]:
     dir_field = tss_dir / f"tss_dir_field_{suffix}.npy"
     sep_mask = tss_dir / f"tss_sepzone_mask_{suffix}.npy"
     sep_boundary = tss_dir / f"tss_sepboundary_mask_{suffix}.npy"
-    lane_graph = tss_dir / f"tss_lane_graph_{suffix}.npy"
+    lane_graph = tss_dir / f"tss_lane_graph_{suffix}.npz"
     
     if not lane_mask.exists() or not dir_field.exists():
         return None
@@ -148,6 +148,8 @@ def get_cost_weights() -> CostWeights:
         tss_max_lane_deviation_deg=cfg.tss.max_lane_deviation_deg,
         tss_snap_corridor_enabled=cfg.tss.snap_corridor_enabled,
         tss_snap_corridor_radius_nm=cfg.tss.snap_corridor_radius_nm,
+        tss_lane_graph_lock_enabled=cfg.tss.lane_graph_lock_enabled,
+        tss_lane_graph_lock_radius_nm=cfg.tss.lane_graph_lock_radius_nm,
         near_shore_depth_penalty=cfg.depth.near_shore_penalty,
         land_proximity_penalty=cfg.land.proximity_penalty,
         land_proximity_max_distance_cells=cfg.land.max_distance_cells,

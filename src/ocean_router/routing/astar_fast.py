@@ -35,6 +35,32 @@ MOVES_8 = np.array([
     (-1, -1, 1.414),   # NW
 ], dtype=np.float32)
 
+MOVE_BEARINGS = np.array([
+    (math.degrees(math.atan2(dx, -dy)) % 360)
+    for dx, dy, _ in MOVES_8
+], dtype=np.float32)
+
+
+def _precompute_row_step_nms(grid: GridSpec, y_off: int, h: int) -> np.ndarray:
+    """Precompute step distances for each row in NM for MOVES_8."""
+    grid_dx_nm = grid.dx * 60.0
+    grid_dy_nm = grid.dy * 60.0
+    rows = np.arange(h, dtype=np.float32)
+    lat = grid.ymax - (y_off + rows + 0.5) * grid.dy
+    lat_factor = np.cos(np.deg2rad(lat))
+    base_step = np.hypot(grid_dx_nm * lat_factor, grid_dy_nm) / math.sqrt(2.0)
+    return (base_step[:, None] * MOVES_8[:, 2][None, :]).astype(np.float32)
+
+
+def _precompute_goal_bearing(x_off: int, y_off: int, w: int, h: int, goal_x: int, goal_y: int) -> np.ndarray:
+    """Precompute grid-based bearing from each cell to the goal."""
+    xs = (x_off + np.arange(w, dtype=np.float32))[None, :]
+    ys = (y_off + np.arange(h, dtype=np.float32))[:, None]
+    dx = goal_x - xs
+    dy = goal_y - ys
+    bearing = np.degrees(np.arctan2(dx, -dy)) % 360.0
+    return bearing.astype(np.float32)
+
 
 def _line_of_sight_clear(
     p0: Tuple[int, int],
@@ -1173,11 +1199,15 @@ class CoarseToFineAStar:
         tss_in_or_near = pre.get("tss_in_or_near")
         tss_in_lane = pre.get("tss_in_lane")
         tss_correct_near = pre.get("tss_correct_near")
+        tss_sepzone = pre.get("tss_sepzone")
+        tss_sepboundary = pre.get("tss_sepboundary")
         corridor_bearing = pre.get("corridor_bearing")
         snap_mask = pre.get("snap_corridor_mask")
         corridor_mask = corridor if snap_mask is None or not snap_mask.size else snap_mask
         goal_x_g = x_off + gx
         goal_y_g = y_off + gy
+        row_step_nms = _precompute_row_step_nms(self.grid, y_off, h)
+        goal_bearing_grid = _precompute_goal_bearing(x_off, y_off, w, h, goal_x_g, goal_y_g)
         
         while open_set:
             _, (cx, cy) = heapq.heappop(open_set)
@@ -1213,17 +1243,8 @@ class CoarseToFineAStar:
             
             gx_cur = x_off + cx
             gy_cur = y_off + cy
-            cur_lon, cur_lat = self.grid.xy_to_lonlat(gx_cur, gy_cur)
 
-            # Precompute per-move step distances for this latitude
-            lat_factor = math.cos(math.radians(cur_lat))
-            grid_dx_nm = context.grid_dx * 60.0
-            grid_dy_nm = context.grid_dy * 60.0
-            moves_base = MOVES_8[:, 2]
-            base_step = math.hypot(grid_dx_nm * lat_factor, grid_dy_nm)
-            step_nms = (moves_base * base_step / math.sqrt(2.0)).tolist()
-
-            for idx, (dx, dy, base_mult) in enumerate(MOVES_8):
+            for idx, (dx, dy, _) in enumerate(MOVES_8):
                 dx, dy = int(dx), int(dy)
                 nx, ny = cx + dx, cy + dy
                 
@@ -1251,8 +1272,8 @@ class CoarseToFineAStar:
                     if context.tss.line_goes_wrong_way(gcy, gcx, gny, gnx, grid=context.grid):
                         continue
                 
-                move_bearing = math.degrees(math.atan2(dx, -dy)) % 360
-                step_nm = step_nms[idx]
+                move_bearing = float(MOVE_BEARINGS[idx])
+                step_nm = float(row_step_nms[cy, idx])
                 
                 penalty = 0.0
                 if depth_penalty is not None:
@@ -1295,7 +1316,7 @@ class CoarseToFineAStar:
                             if cb >= 0:
                                 goal_bearing = float(cb)
                         if goal_bearing is None:
-                            goal_bearing = math.degrees(math.atan2(goal_x_g - gcx, -(goal_y_g - gcy))) % 360
+                            goal_bearing = float(goal_bearing_grid[cy, cx])
                         penalty += context.tss.alignment_penalty(
                             gny, gnx, move_bearing,
                             weights.tss_wrong_way_penalty,
@@ -1307,12 +1328,39 @@ class CoarseToFineAStar:
                             proximity_check_radius=weights.tss_proximity_check_radius,
                         )
                     # Always apply boundary crossing penalties to avoid cutting across separation lines.
-                    penalty += context.tss.boundary_crossing_penalty(
-                        gcy, gcx, gny, gnx,
-                        weights.tss_lane_crossing_penalty,
-                        weights.tss_sepzone_crossing_penalty,
-                        weights.tss_sepboundary_crossing_penalty
-                    )
+                    if (
+                        tss_in_lane is not None
+                        and tss_in_lane.size
+                        and tss_sepzone is not None
+                        and tss_sepzone.size
+                        and tss_sepboundary is not None
+                        and tss_sepboundary.size
+                    ):
+                        was_in_lane = bool(tss_in_lane[cy, cx])
+                        now_in_lane = bool(tss_in_lane[ny, nx])
+                        if was_in_lane and not now_in_lane:
+                            penalty += weights.tss_lane_crossing_penalty
+                        was_in_sepzone = bool(tss_sepzone[cy, cx])
+                        now_in_sepzone = bool(tss_sepzone[ny, nx])
+                        if not was_in_sepzone and now_in_sepzone:
+                            penalty += weights.tss_sepzone_crossing_penalty
+                        elif was_in_sepzone and not now_in_sepzone:
+                            penalty += weights.tss_sepzone_crossing_penalty * 0.25
+                        crossed_boundary = was_in_sepzone != now_in_sepzone
+                        prev_on_sepboundary = bool(tss_sepboundary[cy, cx])
+                        now_on_sepboundary = bool(tss_sepboundary[ny, nx])
+                        if not prev_on_sepboundary and now_on_sepboundary:
+                            penalty += weights.tss_sepboundary_crossing_penalty
+                            crossed_boundary = True
+                        if crossed_boundary:
+                            penalty += weights.tss_sepzone_crossing_penalty
+                    else:
+                        penalty += context.tss.boundary_crossing_penalty(
+                            gcy, gcx, gny, gnx,
+                            weights.tss_lane_crossing_penalty,
+                            weights.tss_sepzone_crossing_penalty,
+                            weights.tss_sepboundary_crossing_penalty
+                        )
                 
                 if cur_bearing >= 0:
                     angle_diff = abs(((move_bearing - cur_bearing + 180) % 360) - 180)
@@ -1449,6 +1497,11 @@ class FastCorridorAStar:
         corridor_bearing = self.precomputed.get('corridor_bearing') if hasattr(self, 'precomputed') else None
         tss_in_lane = self.precomputed.get('tss_in_lane') if hasattr(self, 'precomputed') else None
         tss_correct_near = self.precomputed.get('tss_correct_near') if hasattr(self, 'precomputed') else None
+        tss_in_or_near = self.precomputed.get('tss_in_or_near') if hasattr(self, 'precomputed') else None
+        tss_sepzone = self.precomputed.get('tss_sepzone') if hasattr(self, 'precomputed') else None
+        tss_sepboundary = self.precomputed.get('tss_sepboundary') if hasattr(self, 'precomputed') else None
+        row_step_nms = _precompute_row_step_nms(self.grid, self.y_off, h)
+        goal_bearing_grid = _precompute_goal_bearing(self.x_off, self.y_off, w, h, self.x_off + gx, self.y_off + gy)
         
         # Timing counters for profiling
         time_heappop = 0.0
@@ -1529,17 +1582,8 @@ class FastCorridorAStar:
             
             gx_cur = self.x_off + cx
             gy_cur = self.y_off + cy
-            cur_lon, cur_lat = self.grid.xy_to_lonlat(gx_cur, gy_cur)
-            
-            # Precompute per-move step distances for this latitude
-            lat_factor = math.cos(math.radians(cur_lat))
-            grid_dx_nm = context.grid_dx * 60.0
-            grid_dy_nm = context.grid_dy * 60.0
-            moves_base = MOVES_8[:, 2]
-            base_step = math.hypot(grid_dx_nm * lat_factor, grid_dy_nm)
-            step_nms = (moves_base * base_step / math.sqrt(2.0)).tolist()
 
-            for idx, (dx, dy, base_mult) in enumerate(MOVES_8):
+            for idx, (dx, dy, _) in enumerate(MOVES_8):
                 dx, dy = int(dx), int(dy)
                 nx, ny = cx + dx, cy + dy
                 
@@ -1574,8 +1618,8 @@ class FastCorridorAStar:
                         continue
                 
                 t0 = time.perf_counter()
-                move_bearing = math.degrees(math.atan2(dx, -dy)) % 360
-                step_nm = step_nms[idx]
+                move_bearing = float(MOVE_BEARINGS[idx])
+                step_nm = float(row_step_nms[cy, idx])
                 
                 penalty = 0.0
                 # Use precomputed depth/land penalties if available
@@ -1595,12 +1639,11 @@ class FastCorridorAStar:
                 # Add TSS penalties (only if near a TSS lane)
                 if context.tss:
                     # Use precomputed flag to skip in_or_near checks when possible
-                    tin = self.precomputed.get('tss_in_or_near') if hasattr(self, 'precomputed') else None
                     in_near = False
                     prev_in_near = False
-                    if tin is not None and tin.size:
-                        in_near = bool(tin[ny, nx])
-                        prev_in_near = bool(tin[cy, cx])
+                    if tss_in_or_near is not None and tss_in_or_near.size:
+                        in_near = bool(tss_in_or_near[ny, nx])
+                        prev_in_near = bool(tss_in_or_near[cy, cx])
                     else:
                         in_near = context.tss.in_or_near_lane(gny, gnx, radius=weights.tss_proximity_check_radius)
                         prev_in_near = context.tss.in_or_near_lane(gy_cur, gx_cur, radius=weights.tss_proximity_check_radius)
@@ -1622,7 +1665,7 @@ class FastCorridorAStar:
                             if cb >= 0:
                                 goal_bearing = float(cb)
                         if goal_bearing is None:
-                            goal_bearing = math.degrees(math.atan2((gx + self.x_off) - gx_cur, -((gy + self.y_off) - gy_cur))) % 360
+                            goal_bearing = float(goal_bearing_grid[cy, cx])
                         penalty += context.tss.alignment_penalty(
                             gny, gnx, move_bearing,
                             weights.tss_wrong_way_penalty,
@@ -1634,12 +1677,39 @@ class FastCorridorAStar:
                             proximity_check_radius=weights.tss_proximity_check_radius,
                         )
                     # Always apply boundary crossing penalties to avoid cutting across separation lines.
-                    penalty += context.tss.boundary_crossing_penalty(
-                        gy_cur, gx_cur, gny, gnx,
-                        weights.tss_lane_crossing_penalty,
-                        weights.tss_sepzone_crossing_penalty,
-                        weights.tss_sepboundary_crossing_penalty
-                    )
+                    if (
+                        tss_in_lane is not None
+                        and tss_in_lane.size
+                        and tss_sepzone is not None
+                        and tss_sepzone.size
+                        and tss_sepboundary is not None
+                        and tss_sepboundary.size
+                    ):
+                        was_in_lane = bool(tss_in_lane[cy, cx])
+                        now_in_lane = bool(tss_in_lane[ny, nx])
+                        if was_in_lane and not now_in_lane:
+                            penalty += weights.tss_lane_crossing_penalty
+                        was_in_sepzone = bool(tss_sepzone[cy, cx])
+                        now_in_sepzone = bool(tss_sepzone[ny, nx])
+                        if not was_in_sepzone and now_in_sepzone:
+                            penalty += weights.tss_sepzone_crossing_penalty
+                        elif was_in_sepzone and not now_in_sepzone:
+                            penalty += weights.tss_sepzone_crossing_penalty * 0.25
+                        crossed_boundary = was_in_sepzone != now_in_sepzone
+                        prev_on_sepboundary = bool(tss_sepboundary[cy, cx])
+                        now_on_sepboundary = bool(tss_sepboundary[ny, nx])
+                        if not prev_on_sepboundary and now_on_sepboundary:
+                            penalty += weights.tss_sepboundary_crossing_penalty
+                            crossed_boundary = True
+                        if crossed_boundary:
+                            penalty += weights.tss_sepzone_crossing_penalty
+                    else:
+                        penalty += context.tss.boundary_crossing_penalty(
+                            gy_cur, gx_cur, gny, gnx,
+                            weights.tss_lane_crossing_penalty,
+                            weights.tss_sepzone_crossing_penalty,
+                            weights.tss_sepboundary_crossing_penalty
+                        )
                 
                 if cur_bearing >= 0:
                     angle_diff = abs(((move_bearing - cur_bearing + 180) % 360) - 180)

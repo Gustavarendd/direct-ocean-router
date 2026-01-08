@@ -26,6 +26,7 @@ from ocean_router.routing.astar_fast import (
     _build_corridor_from_path,
     AStarResult,
 )
+from ocean_router.routing.lane_graph import build_lane_graph_macro_path
 from ocean_router.routing.simplify import simplify_path, simplify_between_tss_boundaries, tss_aware_simplify, repair_tss_violations
 
 
@@ -167,6 +168,7 @@ def compute_route(
     
     try:
         result: Optional[AStarResult] = None
+        search_time: Optional[float] = None
         astar = None
         # Calculate overall bearing from start to end for TSS filtering
         import math
@@ -193,7 +195,25 @@ def compute_route(
         )
         print(f"[TIMING] CostContext creation: {(time.perf_counter() - t0)*1000:.1f}ms")
         print(f"[ROUTE] CostContext created with land={'present' if land else 'None'}")
-        
+
+        lane_macro_path: Optional[List[Tuple[int, int]]] = None
+        if (
+            tss is not None
+            and tss.lane_graph is not None
+            and cfg.tss.lane_graph_macro_enabled
+        ):
+            lane_macro_path = build_lane_graph_macro_path(
+                start,
+                end,
+                grid,
+                tss.lane_graph,
+                cfg.tss.lane_graph_snap_max_nm,
+            )
+            if lane_macro_path:
+                print(f"[TSS MACRO] Lane-graph macro path with {len(lane_macro_path)} points")
+            else:
+                print("[TSS MACRO] Lane-graph macro path unavailable")
+
         # Pre-compute distance transform to enable land proximity penalties during search
         if land is not None:
             t0 = time.perf_counter()
@@ -427,6 +447,7 @@ def compute_route(
                         if coarse_try_res.success:
                             print("[FAST PATH] Coarse-to-fine trial succeeded without corridor")
                             result = coarse_try_res
+                            search_time = t_coarse_try
                         else:
                             print("[TIMING] Building corridor...")
                             corridor_mask, x_off, y_off, pre = build_corridor_with_arrays(
@@ -437,6 +458,8 @@ def compute_route(
                                 min_draft=min_draft,
                                 weights=weights,
                                 canals=canals,
+                                corridor_path=lane_macro_path,
+                                corridor_backbone=lane_macro_path,
                             )
                             astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre)
             except Exception as e:
@@ -450,6 +473,8 @@ def compute_route(
                     min_draft=min_draft,
                     weights=weights,
                     canals=canals,
+                    corridor_path=lane_macro_path,
+                    corridor_backbone=lane_macro_path,
                 )
                 astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre)
         print(f"[TIMING] Algorithm setup: {(time.perf_counter() - t0)*1000:.1f}ms")
@@ -459,6 +484,7 @@ def compute_route(
             result = astar.search(start, end, context, weights, min_draft, heuristic_weight=search_heuristic)
             t_search = time.perf_counter() - t0
             print(f"[TIMING] A* search: {t_search*1000:.1f}ms ({t_search:.2f}s)")
+            search_time = t_search
 
         # If coarse-to-fine A* failed, try a macro-guided corridor before corridor fallback
         if not result.success:
@@ -480,6 +506,8 @@ def compute_route(
                     min_draft=min_draft,
                     weights=weights,
                     canals=canals,
+                    corridor_path=lane_macro_path,
+                    corridor_backbone=lane_macro_path,
                 )
                 fallback_astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre)
                 t0_fb = time.perf_counter()
@@ -489,6 +517,7 @@ def compute_route(
                 if fb_result.success:
                     print("[FALLBACK] Corridor A* succeeded; using fallback path")
                     result = fb_result
+                    search_time = t_fb
                 else:
                     print("[FALLBACK] Corridor A* also failed")
             except Exception as e:
@@ -508,6 +537,8 @@ def compute_route(
                             min_draft=min_draft,
                             weights=weights,
                             canals=canals,
+                            corridor_path=lane_macro_path,
+                            corridor_backbone=lane_macro_path,
                         )
                         expanded_astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre_e)
                         t0_e = time.perf_counter()
@@ -517,6 +548,7 @@ def compute_route(
                         if e_res.success:
                             print(f"[FALLBACK] Expanded corridor {factor}x succeeded; using expanded path")
                             result = e_res
+                            search_time = t_e
                             break
                 except Exception as e:
                     print(f"[FALLBACK] Expanded corridor error: {e}")
@@ -547,6 +579,8 @@ def compute_route(
                         min_draft=min_draft,
                         weights=weights,
                         canals=canals,
+                        corridor_path=lane_macro_path,
+                        corridor_backbone=lane_macro_path,
                     )
                     r_res = FastCorridorAStar(grid, r_corridor, r_x_off, r_y_off, precomputed=r_pre).search(start, end, relaxed_ctx, weights, min_draft, heuristic_weight=heuristic_weight)
                     t_r = time.perf_counter() - t0_r
@@ -554,6 +588,7 @@ def compute_route(
                     if r_res.success:
                         print("[FALLBACK] Relaxed (no TSS) search succeeded; using relaxed path")
                         result = r_res
+                        search_time = t_r
                 except Exception as e:
                     print(f"[FALLBACK] Relaxed (no TSS) error: {e}")
 
@@ -583,6 +618,8 @@ def compute_route(
                         min_draft=min_draft,
                         weights=weights,
                         canals=canals,
+                        corridor_path=lane_macro_path,
+                        corridor_backbone=lane_macro_path,
                     )
                     r2_res = FastCorridorAStar(grid, r2_corridor, r2_x_off, r2_y_off, precomputed=r2_pre).search(start, end, relaxed_ctx2, weights, min_draft, heuristic_weight=heuristic_weight)
                     t_r2 = time.perf_counter() - t0_r2
@@ -590,6 +627,7 @@ def compute_route(
                     if r2_res.success:
                         print("[FALLBACK] Relaxed (no land) search succeeded; using relaxed path")
                         result = r2_res
+                        search_time = t_r2
                 except Exception as e:
                     print(f"[FALLBACK] Relaxed (no land) error: {e}")
 
@@ -619,6 +657,8 @@ def compute_route(
                         min_draft=min_draft,
                         weights=weights,
                         canals=canals,
+                        corridor_path=lane_macro_path,
+                        corridor_backbone=lane_macro_path,
                     )
                     r3_res = FastCorridorAStar(grid, r3_corridor, r3_x_off, r3_y_off, precomputed=r3_pre).search(start, end, relaxed_ctx3, weights, min_draft, heuristic_weight=heuristic_weight)
                     t_r3 = time.perf_counter() - t0_r3
@@ -626,6 +666,7 @@ def compute_route(
                     if r3_res.success:
                         print("[FALLBACK] Relaxed (no TSS/no land) search succeeded; using relaxed path")
                         result = r3_res
+                        search_time = t_r3
                 except Exception as e:
                     print(f"[FALLBACK] Relaxed (no TSS/no land) error: {e}")
 
@@ -769,6 +810,12 @@ def compute_route(
                 path[i+1][0], path[i+1][1]
             )
         print(f"[TIMING] Distance calculation: {(time.perf_counter() - t0)*1000:.1f}ms")
+
+        if search_time is not None and total_dist > 0:
+            per_1000 = total_dist / 1000.0
+            nodes_per_1000 = result.explored / per_1000
+            time_per_1000 = search_time / per_1000
+            print(f"[BENCH] A* explored={result.explored}, nodes/1000nm={nodes_per_1000:.1f}, time/1000nm={time_per_1000:.2f}s")
         
         t_total = time.perf_counter() - t_start
         print(f"[TIMING] ===== TOTAL ROUTE COMPUTATION: {t_total*1000:.1f}ms ({t_total:.2f}s) =====")

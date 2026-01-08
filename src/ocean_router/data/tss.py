@@ -15,6 +15,30 @@ if TYPE_CHECKING:
 
 
 @dataclass
+class LaneGraph:
+    nodes_lon: np.ndarray
+    nodes_lat: np.ndarray
+    edges_u: np.ndarray
+    edges_v: np.ndarray
+    edges_weight: np.ndarray
+    edges_flow_bearing: np.ndarray
+    edges_length_nm: np.ndarray
+
+    @classmethod
+    def from_npz(cls, path: Path) -> "LaneGraph":
+        data = np.load(path)
+        return cls(
+            nodes_lon=data["nodes_lon"],
+            nodes_lat=data["nodes_lat"],
+            edges_u=data["edges_u"],
+            edges_v=data["edges_v"],
+            edges_weight=data["edges_weight"],
+            edges_flow_bearing=data["edges_flow_bearing"],
+            edges_length_nm=data["edges_length_nm"],
+        )
+
+
+@dataclass
 class TSSFields:
     lane_mask_path: Path
     direction_field_path: Path
