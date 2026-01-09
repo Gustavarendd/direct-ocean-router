@@ -24,8 +24,8 @@ algorithm:
 # ----------------------------------------------------------------------
 corridor:
   # Width of the search corridor (nm)
-  width_short_nm: 10.0 # For routes up to long_route_threshold_nm
-  width_long_nm: 10.0 # For routes longer than long_route_threshold_nm
+  width_short_nm: 50.0 # For routes up to long_route_threshold_nm
+  width_long_nm: 50.0 # For routes longer than long_route_threshold_nm
 
   # Distance threshold to switch between short/long corridor widths
   long_route_threshold_nm: 1500.0
@@ -41,11 +41,11 @@ corridor:
 tss:
   # Penalties
   wrong_way_penalty: 50.0 # Going wrong way in lane - very dangerous
-  alignment_weight: 50.0 # Bonus for following TSS lanes correctly (~10-20% preference)
-  off_lane_penalty: 0.0 # Penalty when near correct-direction TSS but not in lane
+  alignment_weight: 20.0 # Bonus for following TSS lanes correctly (~10-20% preference)
+  off_lane_penalty: 10.0 # Penalty when near correct-direction TSS but not in lane
   lane_crossing_penalty: 0.0 # Small penalty for EXITING lanes
-  sepzone_crossing_penalty: 1000.0 # High penalty for separation zones
-  sepboundary_crossing_penalty: 100.0 # Penalty for crossing separation boundary lines
+  sepzone_crossing_penalty: 100.0 # High penalty for separation zones
+  sepboundary_crossing_penalty: 30.0 # Penalty for crossing separation boundary lines
 
   # Proximity check - check wrong-way lanes within this radius (cells)
   # At 0.5nm resolution: 2 cells = ~1nm

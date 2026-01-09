@@ -621,3 +621,29 @@ class NumbaAStar:
             cost=float(final_cost),
             success=True
         )
+
+
+class FastNumbaCorridorAStar:
+    """Adapter to provide the same interface as FastCorridorAStar but backed by NumbaAStar.
+
+    This allows the API code to swap in a Numba-backed implementation without
+    changing call sites that expect the FastCorridorAStar constructor and
+    the `search(..., heuristic_weight=...)` signature.
+    """
+
+    def __init__(self, grid: GridSpec, corridor_mask: np.ndarray, x_off: int, y_off: int, precomputed: Optional[dict] = None):
+        # Keep signature compatible with FastCorridorAStar; precomputed is ignored
+        # because NumbaAStar recomputes its own precomputed arrays.
+        self._inner = NumbaAStar(grid, corridor_mask, x_off, y_off)
+
+    def search(
+        self,
+        start_lonlat: Tuple[float, float],
+        goal_lonlat: Tuple[float, float],
+        context: CostContext,
+        weights: CostWeights,
+        min_depth: float,
+        heuristic_weight: float = 1.0,
+    ) -> AStarResult:
+        # heuristic_weight is ignored by the Numba implementation
+        return self._inner.search(start_lonlat, goal_lonlat, context, weights, min_depth)

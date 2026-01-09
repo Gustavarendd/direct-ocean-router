@@ -26,6 +26,7 @@ from ocean_router.routing.astar_fast import (
     _build_corridor_from_path,
     AStarResult,
 )
+from ocean_router.routing.astar_numba import FastNumbaCorridorAStar, NUMBA_AVAILABLE
 from ocean_router.routing.lane_graph import build_lane_graph_macro_path
 from ocean_router.routing.simplify import simplify_path, simplify_between_tss_boundaries, tss_aware_simplify, repair_tss_violations
 
@@ -118,6 +119,9 @@ _coarse_to_fine_cache_short: Optional["CoarseToFineAStar"] = None
 _coarse_to_fine_cache_long: Optional["CoarseToFineAStar"] = None
 
 router = APIRouter()
+
+# Use a Numba-backed corridor A* implementation when available (faster inner loop).
+CorridorAStarImpl = FastNumbaCorridorAStar if NUMBA_AVAILABLE else FastCorridorAStar
 
 
 def compute_route(
@@ -314,7 +318,7 @@ def compute_route(
                     corridor_path=full_macro,
                     grid=grid,
                 )
-                macro_astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre)
+                macro_astar = CorridorAStarImpl(grid, corridor_mask, x_off, y_off, precomputed=pre)
                 macro_res = macro_astar.search(start, end, context, weights, min_draft, heuristic_weight=search_heuristic)
                 return macro_res if macro_res.success else None
             except Exception as e:
@@ -411,7 +415,7 @@ def compute_route(
                                     weights=weights,
                                     canals=canals,
                                 )
-                                seg_astar = FastCorridorAStar(grid, seg_corridor, seg_x_off, seg_y_off, precomputed=seg_pre)
+                                seg_astar = CorridorAStarImpl(grid, seg_corridor, seg_x_off, seg_y_off, precomputed=seg_pre)
                                 seg_res = seg_astar.search((lon0, lat0), (lon1, lat1), context, weights, min_draft, heuristic_weight=search_heuristic)
                                 total_expl += seg_res.explored
                                 total_cost_seg += seg_res.cost if seg_res.success else 0.0
@@ -461,7 +465,7 @@ def compute_route(
                                 corridor_path=lane_macro_path,
                                 corridor_backbone=lane_macro_path,
                             )
-                            astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre)
+                            astar = CorridorAStarImpl(grid, corridor_mask, x_off, y_off, precomputed=pre)
             except Exception as e:
                 print(f"[TIMING] Coarse-to-fine trial error: {e}; falling back to corridor build")
                 print("[TIMING] Building corridor...")
@@ -476,7 +480,7 @@ def compute_route(
                     corridor_path=lane_macro_path,
                     corridor_backbone=lane_macro_path,
                 )
-                astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre)
+                astar = CorridorAStarImpl(grid, corridor_mask, x_off, y_off, precomputed=pre)
         print(f"[TIMING] Algorithm setup: {(time.perf_counter() - t0)*1000:.1f}ms")
         
         if result is None:
@@ -509,7 +513,7 @@ def compute_route(
                     corridor_path=lane_macro_path,
                     corridor_backbone=lane_macro_path,
                 )
-                fallback_astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre)
+                fallback_astar = CorridorAStarImpl(grid, corridor_mask, x_off, y_off, precomputed=pre)
                 t0_fb = time.perf_counter()
                 fb_result = fallback_astar.search(start, end, context, weights, min_draft, heuristic_weight=heuristic_weight)
                 t_fb = time.perf_counter() - t0_fb
@@ -540,7 +544,7 @@ def compute_route(
                             corridor_path=lane_macro_path,
                             corridor_backbone=lane_macro_path,
                         )
-                        expanded_astar = FastCorridorAStar(grid, corridor_mask, x_off, y_off, precomputed=pre_e)
+                        expanded_astar = CorridorAStarImpl(grid, corridor_mask, x_off, y_off, precomputed=pre_e)
                         t0_e = time.perf_counter()
                         e_res = expanded_astar.search(start, end, context, weights, min_draft, heuristic_weight=heuristic_weight)
                         t_e = time.perf_counter() - t0_e
@@ -582,7 +586,7 @@ def compute_route(
                         corridor_path=lane_macro_path,
                         corridor_backbone=lane_macro_path,
                     )
-                    r_res = FastCorridorAStar(grid, r_corridor, r_x_off, r_y_off, precomputed=r_pre).search(start, end, relaxed_ctx, weights, min_draft, heuristic_weight=heuristic_weight)
+                    r_res = CorridorAStarImpl(grid, r_corridor, r_x_off, r_y_off, precomputed=r_pre).search(start, end, relaxed_ctx, weights, min_draft, heuristic_weight=heuristic_weight)
                     t_r = time.perf_counter() - t0_r
                     print(f"[TIMING] Relaxed (no TSS) A* search: {t_r*1000:.1f}ms ({t_r:.2f}s)")
                     if r_res.success:
@@ -621,7 +625,7 @@ def compute_route(
                         corridor_path=lane_macro_path,
                         corridor_backbone=lane_macro_path,
                     )
-                    r2_res = FastCorridorAStar(grid, r2_corridor, r2_x_off, r2_y_off, precomputed=r2_pre).search(start, end, relaxed_ctx2, weights, min_draft, heuristic_weight=heuristic_weight)
+                    r2_res = CorridorAStarImpl(grid, r2_corridor, r2_x_off, r2_y_off, precomputed=r2_pre).search(start, end, relaxed_ctx2, weights, min_draft, heuristic_weight=heuristic_weight)
                     t_r2 = time.perf_counter() - t0_r2
                     print(f"[TIMING] Relaxed (no land) A* search: {t_r2*1000:.1f}ms ({t_r2:.2f}s)")
                     if r2_res.success:
@@ -660,7 +664,7 @@ def compute_route(
                         corridor_path=lane_macro_path,
                         corridor_backbone=lane_macro_path,
                     )
-                    r3_res = FastCorridorAStar(grid, r3_corridor, r3_x_off, r3_y_off, precomputed=r3_pre).search(start, end, relaxed_ctx3, weights, min_draft, heuristic_weight=heuristic_weight)
+                    r3_res = CorridorAStarImpl(grid, r3_corridor, r3_x_off, r3_y_off, precomputed=r3_pre).search(start, end, relaxed_ctx3, weights, min_draft, heuristic_weight=heuristic_weight)
                     t_r3 = time.perf_counter() - t0_r3
                     print(f"[TIMING] Relaxed (no TSS/no land) A* search: {t_r3*1000:.1f}ms ({t_r3:.2f}s)")
                     if r3_res.success:
@@ -718,7 +722,7 @@ def compute_route(
                                 weights=weights,
                                 canals=canals,
                             )
-                            seg_astar = FastCorridorAStar(grid, seg_corridor, seg_x_off, seg_y_off, precomputed=seg_pre)
+                            seg_astar = CorridorAStarImpl(grid, seg_corridor, seg_x_off, seg_y_off, precomputed=seg_pre)
                             seg_res = seg_astar.search((lon0, lat0), (lon1, lat1), context, weights, min_draft, heuristic_weight=heuristic_weight)
                             total_explored += seg_res.explored
                             total_cost += seg_res.cost if seg_res.success else 0.0
