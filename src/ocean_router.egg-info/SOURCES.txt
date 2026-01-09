@@ -30,6 +30,8 @@ src/ocean_router/data/land.py
 src/ocean_router/data/passages.py
 src/ocean_router/data/tss.py
 src/ocean_router/data/tss_vector.py
+src/ocean_router/land/__init__.py
+src/ocean_router/land/land_guard.py
 src/ocean_router/routing/__init__.py
 src/ocean_router/routing/astar.py
 src/ocean_router/routing/astar_fast.py
@@ -42,4 +44,5 @@ src/ocean_router/routing/simplify.py
 src/ocean_router/routing/tss_hybrid.py
 src/ocean_router/tss/__init__.py
 src/ocean_router/tss/tss_graph.py
+tests/test_land_guard.py
 tests/test_tss_graph.py
