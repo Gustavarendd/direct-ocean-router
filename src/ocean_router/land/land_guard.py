@@ -46,6 +46,7 @@ class LandIndex:
     tree: STRtree
     bounds: np.ndarray
     crs: str
+    geom_id_map: dict
 
 
 @dataclass(slots=True)
@@ -108,7 +109,8 @@ def build_land_index(polygons_path: Path, cache_path: Path | None = None) -> Lan
 
     tree = STRtree(geoms)
     prepared = [prep(geom) for geom in geoms]
-    return LandIndex(geoms=geoms, prepared=prepared, tree=tree, bounds=bounds, crs=crs)
+    geom_id_map = {id(g): i for i, g in enumerate(geoms)}
+    return LandIndex(geoms=geoms, prepared=prepared, tree=tree, bounds=bounds, crs=crs, geom_id_map=geom_id_map)
 
 
 def validate_route_no_land(
@@ -127,14 +129,14 @@ def validate_route_no_land(
     for idx in range(len(route_points) - 1):
         segment = LineString([route_points[idx], route_points[idx + 1]])
         check_geom = _buffer_segment_m(segment, tolerance_m) if tolerance_m > 0 else segment
-        candidate_indices = land_index.tree.query(
-            check_geom,
-            predicate="intersects",
-            return_indices=True,
-        )
-        if candidate_indices.size == 0:
+        # Query tree for candidate geometries and map to indices
+        candidate_geoms = land_index.tree.query(check_geom, predicate="intersects")
+        if len(candidate_geoms) == 0:
             continue
-        for geom_idx in candidate_indices:
+        for geom in candidate_geoms:
+            geom_idx = land_index.geom_id_map.get(id(geom))
+            if geom_idx is None:
+                continue
             if land_index.prepared[int(geom_idx)].intersects(check_geom):
                 intersections.append((idx, int(geom_idx)))
                 seg_bbox = segment.bounds
@@ -357,9 +359,12 @@ def _local_land_mask(grid: GridSpec, land_index: LandIndex, params: LandGuardPar
     if cached is not None:
         return cached
     bbox_poly = box(grid.xmin, grid.ymin, grid.xmax, grid.ymax)
-    candidates = land_index.tree.query(bbox_poly, predicate="intersects", return_indices=True)
+    candidates = land_index.tree.query(bbox_poly, predicate="intersects")
     shapes: list[Tuple[object, int]] = []
-    for idx in candidates:
+    for geom in candidates:
+        idx = land_index.geom_id_map.get(id(geom))
+        if idx is None:
+            continue
         geom = land_index.geoms[int(idx)].intersection(bbox_poly)
         if geom.is_empty:
             continue
@@ -402,8 +407,11 @@ def _choose_anchor_indices(
 def _point_on_land(point: Tuple[float, float], land_index: LandIndex, tolerance_m: float) -> bool:
     geom = Point(point)
     check_geom = _buffer_segment_m(geom, tolerance_m) if tolerance_m > 0 else geom
-    indices = land_index.tree.query(check_geom, predicate="intersects", return_indices=True)
-    for idx in indices:
+    geoms = land_index.tree.query(check_geom, predicate="intersects")
+    for geom in geoms:
+        idx = land_index.geom_id_map.get(id(geom))
+        if idx is None:
+            continue
         if land_index.prepared[int(idx)].intersects(check_geom):
             return True
     return False
