@@ -11,6 +11,7 @@ from ocean_router.api.schemas import RouteRequest, RouteResponse
 from ocean_router.api.dependencies import (
     get_grid_spec,
     get_bathy,
+    get_land_index,
     get_land_mask,
     get_tss,
     get_cost_weights,
@@ -40,7 +41,7 @@ from ocean_router.routing.astar_numba import FastNumbaCorridorAStar, NUMBA_AVAIL
 from ocean_router.routing.lane_graph import build_lane_graph_macro_path
 from ocean_router.routing.simplify import simplify_path, simplify_between_tss_boundaries, tss_aware_simplify, repair_tss_violations
 from ocean_router.routing.tss_hybrid import refine_path_with_tss_vector
-from ocean_router.land.land_guard import build_land_index, LandGuardParams, route_with_land_guard
+from ocean_router.land.land_guard import LandGuardParams, route_with_land_guard
 
 
 def _is_open_ocean_route(
@@ -927,69 +928,71 @@ def route(
             corridor_width,
         )
         # Apply land-guard refinement using vector polygons when available
-        try:
-            if land is not None:
-                shp = Path(__file__).resolve().parents[3] / "data" / "raw" / "land_polygons.shp"
-                if shp.exists():
-                    land_index = build_land_index(shp)
+        if land is not None:
+            land_index = get_land_index()
+            if land_index is None:
+                raise HTTPException(status_code=500, detail="Land polygons not available for land-guard validation.")
 
-                    # Global router wrapper returning the already-computed path
-                    class _GlobalRouter:
-                        def __init__(self, p):
-                            self._p = p
-                        def route(self, s, e):
-                            return self._p
+            # Global router wrapper returning the already-computed path
+            class _GlobalRouter:
+                def __init__(self, p):
+                    self._p = p
+                def route(self, s, e):
+                    return self._p
 
-                    # Local router factory used by land guard for refinements
-                    def _local_router_factory(local_grid, local_land_mask):
-                        import numpy as _np
+            # Local router factory used by land guard for refinements
+            def _local_router_factory(local_grid, local_land_mask):
+                import numpy as _np
 
-                        # Use a deep synthetic bathy to allow local re-routing around land
-                        bathy_local = _np.full((local_grid.height, local_grid.width), -10000, dtype=_np.int16)
+                # Use a deep synthetic bathy to allow local re-routing around land
+                bathy_local = _np.full((local_grid.height, local_grid.width), -10000, dtype=_np.int16)
 
-                        class _LocalBathy:
-                            def __init__(self, depth):
-                                self.depth = depth
-                                self.nodata = -32768
-                            def is_safe(self, y, x, min_draft):
-                                return True
-                            def depth_penalty(self, y, x, min_draft, near_threshold_penalty=0.0):
-                                return 0.0
+                class _LocalBathy:
+                    def __init__(self, depth):
+                        self.depth = depth
+                        self.nodata = -32768
+                    def is_safe(self, y, x, min_draft):
+                        return True
+                    def depth_penalty(self, y, x, min_draft, near_threshold_penalty=0.0):
+                        return 0.0
 
-                        local_astar = CoarseToFineAStar(
-                            local_grid,
-                            bathy_local,
-                            land_mask=local_land_mask,
-                            coarse_scale=8,
+                local_astar = CoarseToFineAStar(
+                    local_grid,
+                    bathy_local,
+                    land_mask=local_land_mask,
+                    coarse_scale=8,
+                )
+
+                class _LocalProvider:
+                    def route(self, a, b):
+                        ctx = CostContext(
+                            bathy=_LocalBathy(bathy_local),
+                            tss=None,
+                            density=None,
+                            grid_dx=local_grid.dx,
+                            grid_dy=local_grid.dy,
+                            goal_bearing=0.0,
+                            land=None,
+                            grid=local_grid,
+                            tss_wrong_way_hard=False,
+                            tss_snap_lane_graph=False,
+                            tss_disable_lane_smoothing=False,
                         )
+                        w = CostWeights()
+                        res = local_astar.search(a, b, ctx, w, min_draft=1.0)
+                        return res.path if res.success else []
 
-                        class _LocalProvider:
-                            def route(self, a, b):
-                                ctx = CostContext(
-                                    bathy=_LocalBathy(bathy_local),
-                                    tss=None,
-                                    density=None,
-                                    grid_dx=local_grid.dx,
-                                    grid_dy=local_grid.dy,
-                                    goal_bearing=0.0,
-                                    land=None,
-                                    grid=local_grid,
-                                    tss_wrong_way_hard=False,
-                                    tss_snap_lane_graph=False,
-                                    tss_disable_lane_smoothing=False,
-                                )
-                                w = CostWeights()
-                                res = local_astar.search(a, b, ctx, w, min_draft=1.0)
-                                return res.path if res.success else []
+                return _LocalProvider()
 
-                        return _LocalProvider()
-
-                    params = LandGuardParams(local_router_factory=_local_router_factory)
-                    global_wrapper = _GlobalRouter(path)
-                    guarded = route_with_land_guard(lonlat_waypoints[0], lonlat_waypoints[1], global_wrapper, land_index, params)
-                    path = guarded
-        except Exception as e:
-            warnings.append(f"Land guard error: {e}; continuing with original path")
+            params = LandGuardParams(local_router_factory=_local_router_factory, tolerance_m=50.0)
+            global_wrapper = _GlobalRouter(path)
+            path = route_with_land_guard(
+                lonlat_waypoints[0],
+                lonlat_waypoints[1],
+                global_wrapper,
+                land_index,
+                params,
+            )
     else:
         stitched_path: List[Tuple[float, float]] = []
         for idx in range(len(lonlat_waypoints) - 1):
@@ -1033,61 +1036,63 @@ def route(
         )
 
         # For multi-segment requests, run a land-guard refinement on the final stitched path
-        try:
-            if land is not None:
-                shp = Path(__file__).resolve().parents[3] / "data" / "raw" / "land_polygons.shp"
-                if shp.exists():
-                    land_index = build_land_index(shp)
+        if land is not None:
+            land_index = get_land_index()
+            if land_index is None:
+                raise HTTPException(status_code=500, detail="Land polygons not available for land-guard validation.")
 
-                    class _GlobalRouter2:
-                        def __init__(self, p):
-                            self._p = p
-                        def route(self, s, e):
-                            return self._p
+            class _GlobalRouter2:
+                def __init__(self, p):
+                    self._p = p
+                def route(self, s, e):
+                    return self._p
 
-                    def _local_router_factory2(local_grid, local_land_mask):
-                        import numpy as _np
+            def _local_router_factory2(local_grid, local_land_mask):
+                import numpy as _np
 
-                        bathy_local = _np.full((local_grid.height, local_grid.width), -10000, dtype=_np.int16)
+                bathy_local = _np.full((local_grid.height, local_grid.width), -10000, dtype=_np.int16)
 
-                        class _LocalBathy2:
-                            def __init__(self, depth):
-                                self.depth = depth
-                                self.nodata = -32768
-                            def is_safe(self, y, x, min_draft):
-                                return True
-                            def depth_penalty(self, y, x, min_draft, near_threshold_penalty=0.0):
-                                return 0.0
+                class _LocalBathy2:
+                    def __init__(self, depth):
+                        self.depth = depth
+                        self.nodata = -32768
+                    def is_safe(self, y, x, min_draft):
+                        return True
+                    def depth_penalty(self, y, x, min_draft, near_threshold_penalty=0.0):
+                        return 0.0
 
-                        local_astar = CoarseToFineAStar(local_grid, bathy_local, land_mask=local_land_mask, coarse_scale=8)
+                local_astar = CoarseToFineAStar(local_grid, bathy_local, land_mask=local_land_mask, coarse_scale=8)
 
-                        class _LocalProvider2:
-                            def route(self, a, b):
-                                ctx = CostContext(
-                                    bathy=_LocalBathy2(bathy_local),
-                                    tss=None,
-                                    density=None,
-                                    grid_dx=local_grid.dx,
-                                    grid_dy=local_grid.dy,
-                                    goal_bearing=0.0,
-                                    land=None,
-                                    grid=local_grid,
-                                    tss_wrong_way_hard=False,
-                                    tss_snap_lane_graph=False,
-                                    tss_disable_lane_smoothing=False,
-                                )
-                                w = CostWeights()
-                                res = local_astar.search(a, b, ctx, w, min_draft=1.0)
-                                return res.path if res.success else []
+                class _LocalProvider2:
+                    def route(self, a, b):
+                        ctx = CostContext(
+                            bathy=_LocalBathy2(bathy_local),
+                            tss=None,
+                            density=None,
+                            grid_dx=local_grid.dx,
+                            grid_dy=local_grid.dy,
+                            goal_bearing=0.0,
+                            land=None,
+                            grid=local_grid,
+                            tss_wrong_way_hard=False,
+                            tss_snap_lane_graph=False,
+                            tss_disable_lane_smoothing=False,
+                        )
+                        w = CostWeights()
+                        res = local_astar.search(a, b, ctx, w, min_draft=1.0)
+                        return res.path if res.success else []
 
-                        return _LocalProvider2()
+                return _LocalProvider2()
 
-                    params2 = LandGuardParams(local_router_factory=_local_router_factory2)
-                    global_wrapper2 = _GlobalRouter2(path)
-                    guarded2 = route_with_land_guard(lonlat_waypoints[0], lonlat_waypoints[-1], global_wrapper2, land_index, params2)
-                    path = guarded2
-        except Exception as e:
-            warnings.append(f"Land guard error: {e}; continuing with original path")
+            params2 = LandGuardParams(local_router_factory=_local_router_factory2, tolerance_m=50.0)
+            global_wrapper2 = _GlobalRouter2(path)
+            path = route_with_land_guard(
+                lonlat_waypoints[0],
+                lonlat_waypoints[-1],
+                global_wrapper2,
+                land_index,
+                params2,
+            )
         if tss is not None:
             path, num_repairs = repair_tss_violations(
                 path,
