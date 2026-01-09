@@ -15,9 +15,9 @@ algorithm:
   coarse_to_fine_threshold_nm: 100
 
   # Scale factor for coarse grid in coarse-to-fine A*
-  coarse_scale: 6
+  coarse_scale: 8
   # Heuristic weight for A* (weighted A*). >1.0 trades optimality for speed.
-  heuristic_weight: 1.0
+  heuristic_weight: 1.5
 
 # ----------------------------------------------------------------------
 # Corridor Settings
