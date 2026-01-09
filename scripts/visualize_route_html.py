@@ -299,7 +299,7 @@ def main():
     parser.add_argument("--route-json", type=Path, help="JSON file with route response")
     parser.add_argument("--api-url", default="http://127.0.0.1:8000", help="API URL")
     parser.add_argument("--output", "-o", type=Path, default=Path("route_map.html"), help="Output HTML path")
-    parser.add_argument("--grid", type=Path, default=Path("configs/grid_0.25nm.json"))
+    parser.add_argument("--grid", type=Path, default=Path("configs/grid_1nm.json"))
     parser.add_argument("--data-dir", type=Path, default=Path("data/processed"))
     args = parser.parse_args()
     
@@ -307,16 +307,16 @@ def main():
     grid = GridSpec.from_file(args.grid)
     
     # Load masks
-    land_mask = load_mask(args.data_dir / "land/land_mask_025nm.npy")
+    land_mask = load_mask(args.data_dir / "land/land_mask_1nm.npy")
     
     lane_mask = sepzone_mask = sepboundary_mask = None
     tss_dir = args.data_dir / "tss"
-    if (tss_dir / "tss_lane_mask_025nm.npy").exists():
-        lane_mask = load_mask(tss_dir / "tss_lane_mask_025nm.npy")
-    if (tss_dir / "tss_sepzone_mask_025nm.npy").exists():
-        sepzone_mask = load_mask(tss_dir / "tss_sepzone_mask_025nm.npy")
-    if (tss_dir / "tss_sepboundary_mask_025nm.npy").exists():
-        sepboundary_mask = load_mask(tss_dir / "tss_sepboundary_mask_025nm.npy")
+    if (tss_dir / "tss_lane_mask_1nm.npy").exists():
+        lane_mask = load_mask(tss_dir / "tss_lane_mask_1nm.npy")
+    if (tss_dir / "tss_sepzone_mask_1nm.npy").exists():
+        sepzone_mask = load_mask(tss_dir / "tss_sepzone_mask_1nm.npy")
+    if (tss_dir / "tss_sepboundary_mask_1nm.npy").exists():
+        sepboundary_mask = load_mask(tss_dir / "tss_sepboundary_mask_1nm.npy")
     
     # Get route
     if args.route_json:

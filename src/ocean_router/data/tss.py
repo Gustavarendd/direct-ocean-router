@@ -108,7 +108,7 @@ class TSSFields:
         prev_y: int = None,
         prev_x: int = None,
         goal_bearing: float = None,
-        max_lane_deviation_deg: float = 45.0,
+        max_lane_deviation_deg: float = 60.0,
         proximity_check_radius: int = 2,
     ) -> float:
         """Calculate alignment penalty, checking along the entire path.
@@ -161,7 +161,7 @@ class TSSFields:
         wrong_way_penalty: float,
         alignment_weight: float,
         goal_bearing: float = None,
-        max_lane_deviation_deg: float = 25.0,
+        max_lane_deviation_deg: float = 60.0,
         proximity_check_radius: int = 2,  # ~1nm at 0.5nm resolution
     ) -> float:
         """Check alignment along entire path using Bresenham.
@@ -194,7 +194,7 @@ class TSSFields:
                     # Check if TSS lane direction deviates too much from goal bearing
                     if goal_bearing is not None:
                         lane_to_goal_angle = angle_diff_deg(preferred, goal_bearing)
-                        if lane_to_goal_angle > 45:
+                        if lane_to_goal_angle > max_lane_deviation_deg:
                             # TSS lane goes in wrong overall direction
                             return wrong_way_penalty * 0.5
                     

@@ -101,7 +101,7 @@ def build_direction_field_from_features(
     lane_features: List[dict], 
     grid: GridSpec, 
     out_path: Path, 
-    influence_nm: float = 0.5
+    influence_nm: float = 0.0
 ) -> None:
     """Build direction field from TSS lane features with pre-computed bearings.
     
@@ -219,7 +219,7 @@ def build_lane_graph(lane_features: List[dict], out_path: Path) -> None:
                 align = angle_diff_deg(seg_bearing, flow_bearing)
                 u = _node_id(lon0, lat0)
                 v = _node_id(lon1, lat1)
-                if align <= 90:
+                if align <= 60:
                     _add_edge(u, v, flow_bearing, length_nm, align)
                     edges_added += 1
                 else:

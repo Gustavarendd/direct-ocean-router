@@ -125,7 +125,7 @@ if NUMBA_AVAILABLE:
                     preferred = float(direction_field[y, x])
                     if goal_bearing >= 0.0:
                         lane_to_goal_angle = _angle_diff(preferred, goal_bearing)
-                        if lane_to_goal_angle > 45.0:
+                        if lane_to_goal_angle > 90.0:
                             return wrong_way_penalty * 0.5
                     angle = _angle_diff(move_bearing, preferred)
                     if angle > 90.0:
@@ -450,10 +450,10 @@ if NUMBA_AVAILABLE:
                         penalty += _tss_alignment_along_path(
                             tss_in_lane,
                             tss_direction,
-                            gcy,
-                            gcx,
-                            gny,
-                            gnx,
+                            cy,
+                            cx,
+                            ny,
+                            nx,
                             move_bearing,
                             tss_wrong_way_penalty,
                             tss_alignment_weight,
@@ -466,10 +466,10 @@ if NUMBA_AVAILABLE:
                         tss_in_lane,
                         tss_sepzone,
                         tss_sepboundary,
-                        gcy,
-                        gcx,
-                        gny,
-                        gnx,
+                        cy,
+                        cx,
+                        ny,
+                        nx,
                         tss_lane_crossing_penalty,
                         tss_sepzone_crossing_penalty,
                         tss_sepboundary_crossing_penalty,
@@ -547,6 +547,9 @@ class NumbaAStar:
             corridor_path=[(start_x, start_y), (goal_x, goal_y)],
             grid=self.grid,
         )
+        corridor_mask = pre.get("snap_corridor_mask")
+        if corridor_mask is None or not corridor_mask.size:
+            corridor_mask = self.corridor_mask
         blocked_mask = pre.get("blocked_mask", np.zeros_like(self.corridor_mask, dtype=bool))
         depth_penalty = pre.get("depth_penalty", np.zeros_like(self.corridor_mask, dtype=np.float32))
         tss_in_or_near = pre.get("tss_in_or_near", np.zeros_like(self.corridor_mask, dtype=bool))
@@ -564,11 +567,11 @@ class NumbaAStar:
         grid_dy_nm = self.grid.dy * 60.0
         base_step = np.hypot(grid_dx_nm * lat_factor, grid_dy_nm) / math.sqrt(2.0)
         row_step_nms = (base_step[:, None] * np.array([1.0, 1.414, 1.0, 1.414, 1.0, 1.414, 1.0, 1.414], dtype=np.float32)[None, :]).astype(np.float32)
-        wrap_x = self.x_off == 0 and self.corridor_mask.shape[1] == self.grid.width
+        wrap_x = self.x_off == 0 and corridor_mask.shape[1] == self.grid.width
         
         # Run Numba core
         came_from_x, came_from_y, g_score, final_cost, explored, success = _astar_numba_core(
-            self.corridor_mask,
+            corridor_mask,
             blocked_mask,
             depth_penalty,
             row_step_nms,

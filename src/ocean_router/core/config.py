@@ -37,7 +37,7 @@ class TSSConfig:
     sepzone_crossing_penalty: float = 1000.0
     sepboundary_crossing_penalty: float = 10.0
     proximity_check_radius: int = 2
-    max_lane_deviation_deg: float = 45.0
+    max_lane_deviation_deg: float = 60.0
     snap_corridor_enabled: bool = True
     snap_corridor_radius_nm: float = 3.0
     lane_graph_macro_enabled: bool = True

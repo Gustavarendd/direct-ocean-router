@@ -25,7 +25,7 @@ class CostWeights:
     tss_sepzone_crossing_penalty: float = 10000.0  # High penalty for separation zones
     tss_sepboundary_crossing_penalty: float = 5000.0  # Very high penalty for crossing boundary lines
     tss_proximity_check_radius: int = 2
-    tss_max_lane_deviation_deg: float = 45.0
+    tss_max_lane_deviation_deg: float = 90.0
     tss_snap_corridor_enabled: bool = True
     tss_snap_corridor_radius_nm: float = 3.0
     tss_wrong_way_hard: bool = False
@@ -48,7 +48,7 @@ class CostWeights:
             tss_sepzone_crossing_penalty=config.get("tss_sepzone_crossing_penalty", 10000.0),
             tss_sepboundary_crossing_penalty=config.get("tss_sepboundary_crossing_penalty", 5000.0),
             tss_proximity_check_radius=config.get("tss_proximity_check_radius", 2),
-            tss_max_lane_deviation_deg=config.get("tss_max_lane_deviation_deg", 45.0),
+            tss_max_lane_deviation_deg=config.get("tss_max_lane_deviation_deg", 90.0),
             tss_snap_corridor_enabled=config.get("tss_snap_corridor_enabled", True),
             tss_snap_corridor_radius_nm=config.get("tss_snap_corridor_radius_nm", 3.0),
             tss_wrong_way_hard=config.get("tss_wrong_way_hard", False),
