@@ -4,7 +4,7 @@ Direct Ocean Router is a corridor-limited voyage planning pipeline that guarante
 
 ## Key guarantees
 
-- **No land crossings:** Land is rasterized to a global mask and buffered to prevent coastal threading. Every A\* expansion checks the mask.
+- **No land crossings:** Global routing uses a strict raster mask, then vector validation + local refinement ensures the final polyline never intersects land.
 - **Depth safety:** Depth lookups enforce `depth >= draft + safety_margin` with optional near-threshold penalties.
 - **Directional lanes:** Traffic Separation Scheme (TSS) lanes are encouraged via direction-aware penalties instead of hard locks.
 - **Macro guidance:** A curated passage graph prevents global searches and keeps routing inside known corridors.
@@ -56,7 +56,15 @@ Build the routing grids from raw data. All scripts support `--resolution` flag f
 python scripts/build_land_mask.py \
     --grid configs/grid_1nm.json \
     --resolution 1nm \
-    --land data/raw/land_polygons.shp
+    --land data/raw/land_polygons.shp \
+    --purpose strict
+
+# Visual land mask (for display only)
+python scripts/build_land_mask.py \
+    --grid configs/grid_1nm.json \
+    --resolution 1nm \
+    --land data/raw/land_polygons.shp \
+    --purpose visual
 
 # Bathymetry (requires GEBCO GeoTIFF tiles)
 python scripts/build_bathy_grid.py \
@@ -114,7 +122,7 @@ OCEAN_ROUTER_RESOLUTION=0.5nm uvicorn ocean_router.api.main:app --reload
 ## Pipeline overview
 
 1. **Preprocess** (offline):
-   - Rasterize land polygons to a 1 nm grid, buffer, and store as `.npy`.
+   - Rasterize land polygons to strict (routing) + visual (display) masks and store as `.npy`.
    - Warp bathymetry to the same grid and store as `depth_1nm.npy` (int16 meters with nodata).
    - Rasterize TSS lanes and separation zones; build a direction field from centerlines.
    - Normalize ship-density rasters (optional) to `.npy`.
@@ -124,7 +132,91 @@ OCEAN_ROUTER_RESOLUTION=0.5nm uvicorn ocean_router.api.main:app --reload
    - Classify start/end basins and compute a macro path over `passages.yaml`.
    - Build a buffered corridor mask around macro waypoints.
    - Run corridor-limited A\* with depth checks, TSS penalties, density bias, and turn smoothing.
-   - Validate that the resulting polyline never intersects land; simplify and return GeoJSON.
+   - Validate that the resulting polyline never intersects land; refine locally and return GeoJSON.
+
+## Land guard (vector validation + local refinement)
+
+The land guard enforces a hard no-land-crossing guarantee by validating the global route against the original polygons and re-routing locally only where needed.
+
+### Build strict vs visual masks
+
+```bash
+# Strict mask (routing): preserves narrow channels, no dilation by default
+python scripts/build_land_mask.py --grid configs/grid_1nm.json --resolution 1nm \
+  --land data/raw/land_polygons.shp --purpose strict
+
+# Visual mask (display only): all_touched=True, no dilation by default
+python scripts/build_land_mask.py --grid configs/grid_1nm.json --resolution 1nm \
+  --land data/raw/land_polygons.shp --purpose visual
+```
+
+### Configuration knobs
+
+- `corridor_buffer_nm`: local refinement buffer around offending segments (default 25 nm).
+- `refine_resolution_nm`: local raster resolution for re-routing (default 0.25 nm).
+- `max_refinements`: max local refinement passes before failing (default 5).
+- `buffer_growth_factor`: multiplier per retry if refinement fails (default 0.5).
+- `tolerance_m`: extra land buffer for conservative validation (default 0).
+
+### Example usage (strict mask + land guard routing)
+
+```python
+from pathlib import Path
+import json
+
+import numpy as np
+
+from ocean_router.core.grid import GridSpec
+from ocean_router.core.memmaps import MemMapLoader
+from ocean_router.data.bathy import load_bathy
+from ocean_router.routing.astar_fast import CoarseToFineAStar
+from ocean_router.routing.costs import CostContext, CostWeights
+from ocean_router.land.land_guard import LandGuardParams, build_land_index, route_with_land_guard
+
+grid = GridSpec.from_file("configs/grid_1nm.json")
+land_mask = MemMapLoader("data/processed/land/land_mask_strict_1nm.npy", dtype=np.uint8).array
+bathy = load_bathy("data/processed/bathy/depth_1nm.npy")
+
+class GlobalRouter:
+    def __init__(self) -> None:
+        self.router = CoarseToFineAStar(grid, bathy.depth, land_mask=land_mask)
+        self.context = CostContext(bathy=bathy, tss=None, density=None, grid_dx=grid.dx, grid_dy=grid.dy, land=None, grid=grid)
+        self.weights = CostWeights()
+
+    def route(self, start, end):
+        result = self.router.search(start, end, self.context, self.weights, min_depth=10.0)
+        return result.path, {"success": result.success, "cost": result.cost, "explored": result.explored}
+
+def local_router_factory(local_grid, local_land_mask):
+    bathy_local = np.full((local_grid.height, local_grid.width), -10000, dtype=np.int16)
+    local_router = CoarseToFineAStar(local_grid, bathy_local, land_mask=local_land_mask)
+    class LocalBathy:
+        def __init__(self, depth):
+            self.depth = depth
+            self.nodata = -32768
+        def is_safe(self, y, x, min_draft):
+            return True
+        def depth_penalty(self, y, x, min_draft, near_threshold_penalty=0.0):
+            return 0.0
+    context = CostContext(bathy=LocalBathy(bathy_local), tss=None, density=None,
+                          grid_dx=local_grid.dx, grid_dy=local_grid.dy, land=None, grid=local_grid)
+    weights = CostWeights()
+    class LocalRouter:
+        def route(self, start, end):
+            result = local_router.search(start, end, context, weights, min_depth=1.0)
+            return result.path
+    return LocalRouter()
+
+land_index = build_land_index(Path("data/raw/land_polygons.shp"))
+params = LandGuardParams(local_router_factory=local_router_factory)
+
+start = (12.0, 55.7)
+end = (12.7, 55.7)
+route = route_with_land_guard(start, end, GlobalRouter(), land_index, params)
+
+geojson = {"type": "LineString", "coordinates": route}
+Path("route.geojson").write_text(json.dumps(geojson))
+```
 
 ## CLI Commands
 

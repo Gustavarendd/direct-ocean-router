@@ -6,4 +6,5 @@ __all__ = [
     "routing",
     "api",
     "cli",
+    "land",
 ]
