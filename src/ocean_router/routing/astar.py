@@ -85,7 +85,8 @@ class CorridorAStar:
             cur_lon, cur_lat = self.grid.xy_to_lonlat(cur_x, cur_y)
             goal_bearing = bearing_deg(cur_lon, cur_lat, *goal_lonlat)
             for dx, dy in MOVES:
-                nx, ny = cur_x + dx, cur_y + dy
+                nx = self.grid.wrap_x(cur_x + dx)
+                ny = cur_y + dy
                 if not self.grid.valid_index(nx, ny):
                     continue
                 if not self.in_corridor(nx, ny):

@@ -49,16 +49,33 @@ class GridSpec:
     def ymin(self) -> float:
         return self.ymax - self.dy * self.height
 
+    @property
+    def lon_span(self) -> float:
+        return self.xmax - self.xmin
+
+    def wrap_lon(self, lon: float) -> float:
+        span = self.lon_span
+        if span <= 0:
+            return lon
+        return ((lon - self.xmin) % span) + self.xmin
+
+    def wrap_x(self, x: int) -> int:
+        if self.width <= 0:
+            return x
+        return x % self.width
+
     def lonlat_to_xy(self, lon: float, lat: float) -> Tuple[int, int]:
         """Convert lon/lat to integer grid indices (x, y).
 
         Y is counted from the north (row-major), so higher latitudes have smaller y.
         """
+        lon = self.wrap_lon(lon)
         x = int(np.floor((lon - self.xmin) / self.dx))
         y = int(np.floor((self.ymax - lat) / self.dy))
         return x, y
 
     def xy_to_lonlat(self, x: int, y: int) -> Tuple[float, float]:
+        x = self.wrap_x(x)
         lon = self.xmin + (x + 0.5) * self.dx
         lat = self.ymax - (y + 0.5) * self.dy
         return lon, lat
