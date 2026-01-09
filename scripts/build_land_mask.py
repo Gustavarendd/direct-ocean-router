@@ -17,7 +17,7 @@ from ocean_router.core.grid import GridSpec
 from ocean_router.core.memmaps import save_memmap
 
 
-def rasterize_land(polygons_path: Path, grid: GridSpec, out_tif: Path, out_npy: Path, iterations: int = 1) -> None:
+def rasterize_land(polygons_path: Path, grid: GridSpec, out_tif: Path, out_npy: Path, iterations: int = 0) -> None:
     """Rasterize land polygons using streaming to avoid memory issues."""
     transform = rasterio.transform.from_origin(grid.xmin, grid.ymax, grid.dx, grid.dy)
     
@@ -40,6 +40,7 @@ def rasterize_land(polygons_path: Path, grid: GridSpec, out_tif: Path, out_npy: 
         transform=transform,
         fill=0,
         dtype="uint8",
+        all_touched=True,
     )
     
     print(f"Land pixels: {np.sum(raster > 0):,} / {raster.size:,}")
@@ -92,7 +93,7 @@ def main() -> None:
     out_npy = out_tif.with_suffix(".npy")
 
     print(f"[RESOLUTION] Building land mask at {args.resolution} ({grid.width}x{grid.height})")
-    rasterize_land(args.land, grid, out_tif, out_npy, iterations=2)
+    rasterize_land(args.land, grid, out_tif, out_npy, iterations=1)
 
 
 if __name__ == "__main__":

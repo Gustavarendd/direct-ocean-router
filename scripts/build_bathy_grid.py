@@ -59,7 +59,7 @@ def resample_bathy(gebco_src, grid: GridSpec, out_npy: Path, nodata: int = -3276
         src_crs=gebco_src.crs,
         dst_transform=transform,
         dst_crs=grid.crs,
-        resampling=Resampling.bilinear,
+        resampling=Resampling.nearest,
     )
     
     out_npy.parent.mkdir(parents=True, exist_ok=True)

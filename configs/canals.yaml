@@ -1,15 +1,19 @@
 canals:
   - id: suez
     name: Suez Canal
-    width_nm: 5.0
+    width_nm: 10.0
     waypoints:
+      - [32.320, 31.300]
       - [32.301, 31.265]
       - [32.360, 30.550]
       - [32.548, 29.970]
+      - [32.600, 29.880]
   - id: panama
     name: Panama Canal
-    width_nm: 5.0
+    width_nm: 10.0
     waypoints:
+      - [-79.950, 9.420]
       - [-79.900, 9.350]
       - [-79.700, 9.100]
       - [-79.560, 8.950]
+      - [-79.520, 8.880]

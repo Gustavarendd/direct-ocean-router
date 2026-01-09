@@ -317,7 +317,7 @@ def main() -> None:
     zone_shapes = []
     for feat in zone_features:
         geom = shape(feat["geometry"])
-        buffer_nm = 0.5
+        buffer_nm = 0.1
         if geom.geom_type in ("LineString", "MultiLineString"):
             # if start/end are same, make polygon
             if isinstance(geom, LineString) and geom.is_ring:
@@ -337,7 +337,7 @@ def main() -> None:
         geom = shape(feat["geometry"])
         # Buffer boundary lines by 1nm to ensure continuous coverage
         # This is important for routing to detect crossings properly
-        buffer_nm = 0.5
+        buffer_nm = 0.1
         if geom.geom_type in ("LineString", "MultiLineString"):
             buffered = geom.buffer(buffer_nm / 60)  # Convert nm to degrees
             boundary_shapes.append((buffered, 1))

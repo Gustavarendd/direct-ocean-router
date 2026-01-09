@@ -35,6 +35,9 @@ def create_tile_image(
     sepzone_mask: np.ndarray | None,
     sepboundary_mask: np.ndarray | None,
     bbox: tuple,
+    depth: np.ndarray | None = None,
+    depth_nodata: int = -32768,
+    depth_max_m: int = 1000,
     size: int = 512,
 ) -> tuple[str, tuple]:
     """Create a PNG image for the bbox and return as base64 with actual bounds.
@@ -61,14 +64,20 @@ def create_tile_image(
     
     # Extract subsets
     land_sub = land_mask[y_min:y_max, x_min:x_max]
+    depth_sub = None
+    if depth is not None:
+        depth_sub = depth[y_min:y_max, x_min:x_max]
     
     # Create RGBA image
     h, w = land_sub.shape
     img_data = np.zeros((h, w, 4), dtype=np.uint8)
     
     # Ocean - transparent
-    # Land - tan
-    land_pixels = land_sub > 0
+    # Land - tan. Also treat cells with non-negative bathymetry as land
+    if depth_sub is not None:
+        land_pixels = (land_sub > 0) | (depth_sub >= 0)
+    else:
+        land_pixels = land_sub > 0
     img_data[land_pixels] = [212, 196, 168, 255]
     
     # TSS lanes - light green
@@ -88,6 +97,42 @@ def create_tile_image(
         sepboundary_sub = sepboundary_mask[y_min:y_max, x_min:x_max]
         boundary_pixels = (sepboundary_sub > 0) & (~land_pixels)
         img_data[boundary_pixels] = [255, 107, 107, 200]
+
+    # Bathymetry shading (discrete bands) and boundary lines
+    if depth_sub is not None:
+        # valid water cells: not nodata and negative depth values
+        valid_water = (depth_sub != depth_nodata) & (depth_sub < 0) & (~land_pixels)
+        if valid_water.any():
+            # Convert to positive depth in meters
+            depth_m = -depth_sub.astype(np.float32)
+
+
+            # Define discrete bands (meters): exact 0, (0,5], (5,10], (10,20], >20
+            band_ids = np.full(depth_m.shape, -1, dtype=np.int8)
+            band_ids[valid_water & (depth_m == 0.0)] = 0
+            band_ids[valid_water & (depth_m > 0.0) & (depth_m <= 5.0)] = 1
+            band_ids[valid_water & (depth_m > 5.0) & (depth_m <= 10.0)] = 2
+            band_ids[valid_water & (depth_m > 10.0) & (depth_m <= 20.0)] = 3
+            band_ids[valid_water & (depth_m > 20.0)] = 4
+
+            # Colors for bands
+            colors = {
+                0: (255, 255, 255, 220),   # 0 m -> white
+                1: (173, 216, 230, 220),   # 0-5 m -> light blue
+                2: (34, 139, 34, 220),     # 5-10 m -> green (ForestGreen)
+                3: (0, 30, 100, 220),      # 10-20 m -> dark blue
+                4: (220, 20, 60, 220),     # >20 m -> red (Crimson)
+            }
+
+            for bid, col in colors.items():
+                mask = band_ids == bid
+                if mask.any():
+                    img_data[mask, 0] = col[0]
+                    img_data[mask, 1] = col[1]
+                    img_data[mask, 2] = col[2]
+                    img_data[mask, 3] = col[3]
+
+            # (Edge drawing removed to avoid heavy black outlines)
     
     # Create PIL image - DO NOT resize to square, keep original aspect ratio
     # The geographic bounds will handle proper placement on the map
@@ -122,6 +167,7 @@ def create_html_map(
     sepzone_mask: np.ndarray | None,
     sepboundary_mask: np.ndarray | None,
     output_path: Path,
+    depth: np.ndarray | None = None,
 ):
     """Create an interactive HTML map with Leaflet."""
     
@@ -148,7 +194,8 @@ def create_html_map(
     
     overlay_base64, actual_bbox = create_tile_image(
         grid, land_mask, lane_mask, sepzone_mask, sepboundary_mask,
-        bbox
+        bbox,
+        depth=depth,
     )
     # Use actual_bbox for overlay bounds to ensure pixel-perfect alignment
     bbox = actual_bbox
@@ -224,7 +271,7 @@ def create_html_map(
         // TSS Overlay
         var overlayBounds = [[{bbox[2]}, {bbox[0]}], [{bbox[3]}, {bbox[1]}]];
         var tssOverlay = L.imageOverlay('data:image/png;base64,{overlay_base64}', overlayBounds, {{
-            opacity: 0.7
+            opacity: 1.0
         }}).addTo(map);
         
         // Route line
@@ -276,6 +323,11 @@ def create_html_map(
             var div = L.DomUtil.create('div', 'legend');
             div.innerHTML = '<b>Legend</b><br>' +
                 '<div class="legend-item"><div class="legend-color" style="background:#d4c4a8"></div>Land</div>' +
+                '<div class="legend-item"><div class="legend-color" style="background:#ffffff;border:1px solid #999"></div>0 m (dry)</div>' +
+                '<div class="legend-item"><div class="legend-color" style="background:#ADD8E6;border:1px solid #999"></div>0–5 m</div>' +
+                '<div class="legend-item"><div class="legend-color" style="background:#228B22;border:1px solid #999"></div>5–10 m</div>' +
+                '<div class="legend-item"><div class="legend-color" style="background:#001E64;border:1px solid #999"></div>10–20 m</div>' +
+                '<div class="legend-item"><div class="legend-color" style="background:#DC143C;border:1px solid #999"></div>>20 m</div>' +
                 '<div class="legend-item"><div class="legend-color" style="background:#90EE90"></div>TSS Lane</div>' +
                 '<div class="legend-item"><div class="legend-color" style="background:#FFD700"></div>Separation Zone</div>' +
                 '<div class="legend-item"><div class="legend-color" style="background:#FF6B6B"></div>Separation Boundary</div>' +
@@ -301,13 +353,21 @@ def main():
     parser.add_argument("--output", "-o", type=Path, default=Path("route_map.html"), help="Output HTML path")
     parser.add_argument("--grid", type=Path, default=Path("configs/grid_1nm.json"))
     parser.add_argument("--data-dir", type=Path, default=Path("data/processed"))
+    parser.add_argument("--show-depth", action="store_true", help="Include bathymetry overlay (depth_1nm.npy)")
     args = parser.parse_args()
     
     # Load grid
     grid = GridSpec.from_file(args.grid)
     
-    # Load masks
-    land_mask = load_mask(args.data_dir / "land/land_mask_1nm.npy")
+    # Load masks (prefer buffered land mask if available to include small islands)
+    land_base = args.data_dir / "land/land_mask_1nm.npy"
+    land_buf = args.data_dir / "land/land_mask_1nm_buffered.npy"
+    if land_buf.exists():
+        land_mask = load_mask(land_buf)
+    elif land_base.exists():
+        land_mask = load_mask(land_base)
+    else:
+        raise FileNotFoundError("No land mask found in data directory")
     
     lane_mask = sepzone_mask = sepboundary_mask = None
     tss_dir = args.data_dir / "tss"
@@ -317,6 +377,13 @@ def main():
         sepzone_mask = load_mask(tss_dir / "tss_sepzone_mask_1nm.npy")
     if (tss_dir / "tss_sepboundary_mask_1nm.npy").exists():
         sepboundary_mask = load_mask(tss_dir / "tss_sepboundary_mask_1nm.npy")
+    depth = None
+    if args.show_depth:
+        depth_path = args.data_dir / "bathy" / "depth_1nm.npy"
+        if depth_path.exists():
+            depth = load_mask(depth_path)
+        else:
+            print(f"[WARNING] Depth file not found: {depth_path}; continuing without depth overlay")
     
     # Get route
     if args.route_json:
@@ -343,6 +410,7 @@ def main():
         sepzone_mask=sepzone_mask,
         sepboundary_mask=sepboundary_mask,
         output_path=args.output,
+        depth=depth,
     )
 
 

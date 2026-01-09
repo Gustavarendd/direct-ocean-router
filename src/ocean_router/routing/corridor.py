@@ -11,7 +11,7 @@ from rasterio import features
 import rasterio
 from scipy import ndimage
 
-from ocean_router.core.geodesy import bearing_deg, unwrap_lon
+from ocean_router.core.geodesy import bearing_deg, unwrap_lon, rhumb_interpolate, rhumb_distance_nm
 from ocean_router.core.grid import GridSpec, window_from_bbox
 from ocean_router.data.canals import canal_mask_window
 
@@ -51,21 +51,39 @@ def build_corridor(
     end_lon, end_lat = end
     end_lon = unwrap_lon(end_lon, start_lon)
 
+    def _sample_rhumb(lon_a: float, lat_a: float, lon_b: float, lat_b: float, spacing_nm: float = 1.0):
+        """Return a list of lon/lat samples along the rhumb line between two points.
+
+        spacing_nm controls approximate spacing between samples in nautical miles.
+        """
+        dist = rhumb_distance_nm(lon_a, lat_a, lon_b, lat_b)
+        if dist <= 0:
+            return [(lon_a, lat_a), (lon_b, lat_b)]
+        steps = max(1, int(round(dist / spacing_nm)))
+        pts = [rhumb_interpolate(lon_a, lat_a, lon_b, lat_b, float(i) / steps) for i in range(steps + 1)]
+        return pts
+
     lines = []
+    # Handle dateline wrapping by unwrapping end longitude relative to start
     if end_lon > grid.xmax:
         boundary = grid.xmax
         frac = (boundary - start_lon) / (end_lon - start_lon)
-        lat_at = start_lat + (end_lat - start_lat) * frac
-        lines.append(LineString([(start_lon, start_lat), (boundary, lat_at)]))
-        lines.append(LineString([(grid.xmin, lat_at), (end_lon - span, end_lat)]))
+        # compute lat at dateline using rhumb interpolation
+        lon_at = boundary
+        lon_unwrapped = unwrap_lon(end_lon, start_lon)
+        lat_at = rhumb_interpolate(start_lon, start_lat, lon_unwrapped, end_lat, frac)[1]
+        lines.append(LineString(_sample_rhumb(start_lon, start_lat, lon_at, lat_at)))
+        lines.append(LineString(_sample_rhumb(grid.xmin, lat_at, end_lon - span, end_lat)))
     elif end_lon < grid.xmin:
         boundary = grid.xmin
         frac = (boundary - start_lon) / (end_lon - start_lon)
-        lat_at = start_lat + (end_lat - start_lat) * frac
-        lines.append(LineString([(start_lon, start_lat), (boundary, lat_at)]))
-        lines.append(LineString([(grid.xmax, lat_at), (end_lon + span, end_lat)]))
+        lon_at = boundary
+        lon_unwrapped = unwrap_lon(end_lon, start_lon)
+        lat_at = rhumb_interpolate(start_lon, start_lat, lon_unwrapped, end_lat, frac)[1]
+        lines.append(LineString(_sample_rhumb(start_lon, start_lat, lon_at, lat_at)))
+        lines.append(LineString(_sample_rhumb(grid.xmax, lat_at, end_lon + span, end_lat)))
     else:
-        lines.append(LineString([(start_lon, start_lat), (end_lon, end_lat)]))
+        lines.append(LineString(_sample_rhumb(start_lon, start_lat, end_lon, end_lat)))
 
     corridor_geom = unary_union([line.buffer(buffer_deg, cap_style=1) for line in lines])
     
