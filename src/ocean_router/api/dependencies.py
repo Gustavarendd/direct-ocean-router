@@ -14,6 +14,7 @@ from ocean_router.data.canals import Canal, load_canals
 from ocean_router.data.land import LandMask
 from ocean_router.data.tss import TSSFields
 from ocean_router.data.tss_vector import TSSVectorGraph, load_or_build_tss_vector_graph
+from ocean_router.land.land_guard import LandIndex, build_land_index
 from ocean_router.routing.costs import CostWeights
 
 
@@ -58,6 +59,7 @@ def set_resolution(resolution: str) -> None:
     get_grid_spec.cache_clear()
     get_bathy.cache_clear()
     get_land_mask.cache_clear()
+    get_land_index.cache_clear()
     get_tss.cache_clear()
     print(f"[RESOLUTION] Switched to {resolution} grid")
 
@@ -98,7 +100,10 @@ def get_land_mask() -> Optional[LandMask]:
     # Prefer explicit strict routing mask if present (produced by build_land_mask --purpose strict)
     strict_path = _project_root() / "data" / "processed" / "land" / f"land_mask_strict_{suffix}.npy"
     base_path = strict_path if strict_path.exists() else _project_root() / "data" / "processed" / "land" / f"land_mask_{suffix}.npy"
-    buffered_path = _project_root() / "data" / "processed" / "land" / f"land_mask_{suffix}_buffered.npy"
+    if strict_path.exists():
+        buffered_path = _project_root() / "data" / "processed" / "land" / f"land_mask_strict_{suffix}_buffered.npy"
+    else:
+        buffered_path = _project_root() / "data" / "processed" / "land" / f"land_mask_{suffix}_buffered.npy"
     
     if not base_path.exists():
         return None
@@ -127,6 +132,14 @@ def get_tss() -> Optional[TSSFields]:
         sepboundary_mask_path=sep_boundary if sep_boundary.exists() else None,
         lane_graph_path=lane_graph if lane_graph.exists() else None,
     )
+
+
+@lru_cache(maxsize=1)
+def get_land_index() -> Optional[LandIndex]:
+    shp = _project_root() / "data" / "raw" / "land_polygons.shp"
+    if not shp.exists():
+        return None
+    return build_land_index(shp)
 
 
 @lru_cache(maxsize=1)

@@ -19,8 +19,10 @@ def sample_checks(grid: GridSpec, land: LandMask, bathy_path: Path, samples: int
         x = random.randint(0, grid.width - 1)
         y = random.randint(0, grid.height - 1)
         lon, lat = grid.xy_to_lonlat(x, y)
-        if land.buffered[y, x]:
-            notes.append(f"Buffered land at ({lon:.2f},{lat:.2f}) blocks routing.")
+        if land.base[y, x]:
+            notes.append(f"Strict land at ({lon:.2f},{lat:.2f}) blocks routing.")
+        elif land.buffered is not land.base and land.buffered[y, x]:
+            notes.append(f"Buffered land at ({lon:.2f},{lat:.2f}) expands routing exclusion.")
         depth = bathy.depth[y, x]
         if depth == bathy.nodata:
             notes.append(f"Nodata depth at ({lon:.2f},{lat:.2f}).")
@@ -30,9 +32,9 @@ def sample_checks(grid: GridSpec, land: LandMask, bathy_path: Path, samples: int
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--grid", type=Path, default=Path("configs/grid_1nm.json"))
-    parser.add_argument("--land", type=Path, default=Path("data/processed/land/land_mask_1nm.npy"))
+    parser.add_argument("--land", type=Path, default=Path("data/processed/land/land_mask_strict_1nm.npy"))
     parser.add_argument("--bathy", type=Path, default=Path("data/processed/bathy/depth_1nm.npy"))
-    parser.add_argument("--buffered", type=Path, default=Path("data/processed/land/land_mask_buffered_1nm.npy"))
+    parser.add_argument("--buffered", type=Path, default=Path("data/processed/land/land_mask_strict_1nm_buffered.npy"))
     parser.add_argument("--samples", type=int, default=10)
     args = parser.parse_args()
 
