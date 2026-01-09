@@ -10,7 +10,7 @@ from typing import List, Optional, Tuple, Callable
 import numpy as np
 from scipy import ndimage
 
-from ocean_router.core.geodesy import shortest_dlon
+from ocean_router.core.geodesy import bearing_deg, rhumb_distance_nm, shortest_dlon
 from ocean_router.core.grid import GridSpec
 from ocean_router.routing.costs import CostContext, CostWeights
 from ocean_router.routing.corridor import precompute_corridor_arrays
@@ -1222,6 +1222,32 @@ class CoarseToFineAStar:
         wrap_x = x_off == 0 and w == self.grid.width
         row_step_nms = _precompute_row_step_nms(self.grid, y_off, h)
         goal_bearing_grid = _precompute_goal_bearing(x_off, y_off, w, h, goal_x_g, goal_y_g)
+
+        def line_is_valid(p0: Tuple[int, int], p1: Tuple[int, int]) -> bool:
+            def is_blocked(x: int, y: int) -> bool:
+                ly = y - y_off
+                lx = x - x_off
+                if not (0 <= ly < h and 0 <= lx < w):
+                    return True
+                if not corridor_mask[ly, lx]:
+                    return True
+                if blocked_mask[ly, lx]:
+                    return True
+                if self.land_mask is not None and self.land_mask[y, x]:
+                    if override_mask is None or not override_mask[ly, lx]:
+                        return True
+                return False
+
+            if not _line_of_sight_clear(p0, p1, is_blocked):
+                return False
+            if context.tss is not None:
+                x0, y0 = p0
+                x1, y1 = p1
+                if context.tss.line_crosses_boundary(y0, x0, y1, x1):
+                    return False
+                if context.tss_wrong_way_hard and context.tss.line_goes_wrong_way(y0, x0, y1, x1, grid=context.grid):
+                    return False
+            return True
         
         while open_set:
             _, (cx, cy) = heapq.heappop(open_set)
@@ -1290,8 +1316,29 @@ class CoarseToFineAStar:
                     if context.tss.line_goes_wrong_way(gcy, gcx, gny, gnx, grid=context.grid):
                         continue
                 
-                move_bearing = float(MOVE_BEARINGS[idx])
-                step_nm = float(row_step_nms[cy, idx])
+                base_cx, base_cy = cx, cy
+                base_gx, base_gy = gx_cur, gy_cur
+                base_g = cur_g
+                base_bearing = cur_bearing
+                parent_x = came_from_x[cy, cx]
+                parent_y = came_from_y[cy, cx]
+                if parent_x >= 0 and parent_y >= 0:
+                    parent_gx = x_off + parent_x
+                    parent_gy = y_off + parent_y
+                    if line_is_valid((parent_gx, parent_gy), (gnx, gny)):
+                        base_cx, base_cy = parent_x, parent_y
+                        base_gx, base_gy = parent_gx, parent_gy
+                        base_g = float(g_score[parent_y, parent_x])
+                        base_bearing = prev_bearing[parent_y, parent_x]
+
+                if base_cx == cx and base_cy == cy:
+                    move_bearing = float(MOVE_BEARINGS[idx])
+                    step_nm = float(row_step_nms[cy, idx])
+                else:
+                    base_lon, base_lat = self.grid.xy_to_lonlat(base_gx, base_gy)
+                    next_lon, next_lat = self.grid.xy_to_lonlat(gnx, gny)
+                    move_bearing = bearing_deg(base_lon, base_lat, next_lon, next_lat)
+                    step_nm = rhumb_distance_nm(base_lon, base_lat, next_lon, next_lat)
                 
                 penalty = 0.0
                 if depth_penalty is not None:
@@ -1308,11 +1355,11 @@ class CoarseToFineAStar:
                 
                 # Add TSS penalties (only if near a TSS lane)
                 if context.tss:
-                    gcx = x_off + cx
-                    gcy = y_off + cy
+                    gcx = base_gx
+                    gcy = base_gy
                     if tss_in_or_near is not None:
                         in_near = bool(tss_in_or_near[ny, nx])
-                        prev_in_near = bool(tss_in_or_near[cy, cx])
+                        prev_in_near = bool(tss_in_or_near[base_cy, base_cx])
                     else:
                         in_near = context.tss.in_or_near_lane(gny, gnx, radius=weights.tss_proximity_check_radius)
                         prev_in_near = context.tss.in_or_near_lane(gcy, gcx, radius=weights.tss_proximity_check_radius)
@@ -1354,18 +1401,18 @@ class CoarseToFineAStar:
                         and tss_sepboundary is not None
                         and tss_sepboundary.size
                     ):
-                        was_in_lane = bool(tss_in_lane[cy, cx])
+                        was_in_lane = bool(tss_in_lane[base_cy, base_cx])
                         now_in_lane = bool(tss_in_lane[ny, nx])
                         if was_in_lane and not now_in_lane:
                             penalty += weights.tss_lane_crossing_penalty
-                        was_in_sepzone = bool(tss_sepzone[cy, cx])
+                        was_in_sepzone = bool(tss_sepzone[base_cy, base_cx])
                         now_in_sepzone = bool(tss_sepzone[ny, nx])
                         if not was_in_sepzone and now_in_sepzone:
                             penalty += weights.tss_sepzone_crossing_penalty
                         elif was_in_sepzone and not now_in_sepzone:
                             penalty += weights.tss_sepzone_crossing_penalty * 0.25
                         crossed_boundary = was_in_sepzone != now_in_sepzone
-                        prev_on_sepboundary = bool(tss_sepboundary[cy, cx])
+                        prev_on_sepboundary = bool(tss_sepboundary[base_cy, base_cx])
                         now_on_sepboundary = bool(tss_sepboundary[ny, nx])
                         if not prev_on_sepboundary and now_on_sepboundary:
                             penalty += weights.tss_sepboundary_crossing_penalty
@@ -1380,16 +1427,16 @@ class CoarseToFineAStar:
                             weights.tss_sepboundary_crossing_penalty
                         )
                 
-                if cur_bearing >= 0:
-                    angle_diff = abs(((move_bearing - cur_bearing + 180) % 360) - 180)
+                if base_bearing >= 0:
+                    angle_diff = abs(((move_bearing - base_bearing + 180) % 360) - 180)
                     penalty += weights.turn_penalty_weight * angle_diff / 180
                 
-                tentative_g = cur_g + step_nm + penalty
+                tentative_g = base_g + step_nm + penalty
                 
                 if tentative_g < g_score[ny, nx]:
                     g_score[ny, nx] = tentative_g
-                    came_from_x[ny, nx] = cx
-                    came_from_y[ny, nx] = cy
+                    came_from_x[ny, nx] = base_cx
+                    came_from_y[ny, nx] = base_cy
                     prev_bearing[ny, nx] = move_bearing
                     f = tentative_g + heuristic(nx, ny)
                     heapq.heappush(open_set, (f, (nx, ny)))
