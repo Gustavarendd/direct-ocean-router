@@ -1,0 +1,21 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "properties": {
+        "seamark:type": "separation_lane",
+        "tss_flow_bearing_deg": 90,
+        "tss_flow_is_forward_along_geometry": true,
+        "lane_id": "lane-1"
+      },
+      "geometry": {
+        "type": "LineString",
+        "coordinates": [
+          [0.0, 0.0],
+          [1.0, 0.0]
+        ]
+      }
+    }
+  ]
+}

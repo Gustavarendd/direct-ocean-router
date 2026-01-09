@@ -91,6 +91,31 @@ python scripts/build_tss_fields.py \
     --tss-geojson data/raw/separation_lanes_with_direction.geojson
 ```
 
+### Tile rasters (optional, recommended for large grids)
+
+Tile-backed rasters keep routing memory usage low by reading only the tiles needed for each corridor.
+
+```bash
+python -m ocean_router.cli.main preprocess tile-rasters \
+  --grid configs/grid_1nm.json \
+  --land data/processed/land/land_mask_strict_1nm.npy \
+  --land-buffered data/processed/land/land_mask_strict_1nm_buffered.npy \
+  --bathy data/processed/bathy/depth_1nm.npy \
+  --tile-size 2048 \
+  --outdir data/processed
+```
+
+Tile outputs are written to:
+
+- `data/processed/land_tiles/<resolution>/tile_{tx}_{ty}.npy` + `meta.json`
+- `data/processed/bathy_tiles/<resolution>/tile_{tx}_{ty}.npy` + `meta.json`
+
+If tile metadata is present, the router will prefer tiles automatically.
+
+### TSS STRtree indexing
+
+TSS lane centerlines are now indexed at runtime using a Shapely STRtree built directly from the GeoJSON source. This replaces the legacy `tss_lane_graph_*.npz` pipeline; no NPZ lane graphs are required for routing.
+
 ## Resolution Switching
 
 The router supports multiple grid resolutions. Switch via environment variable:
@@ -125,10 +150,11 @@ OCEAN_ROUTER_RESOLUTION=0.5nm uvicorn ocean_router.api.main:app --reload
    - Rasterize land polygons to strict (routing) + visual (display) masks and store as `.npy`.
    - Warp bathymetry to the same grid and store as `depth_1nm.npy` (int16 meters with nodata).
    - Rasterize TSS lanes and separation zones; build a direction field from centerlines.
+   - (Optional) Tile land/bathy rasters into `land_tiles/` and `bathy_tiles/` for tile-backed loading.
    - Normalize ship-density rasters (optional) to `.npy`.
    - Build basin classifier and passage graph caches.
 2. **Runtime** (fast):
-   - Load memmaps for land, depth, TSS, density, and basins once.
+   - Load tile-backed rasters for land/depth when available (falling back to memmaps).
    - Classify start/end basins and compute a macro path over `passages.yaml`.
    - Build a buffered corridor mask around macro waypoints.
    - Run corridor-limited A\* with depth checks, TSS penalties, density bias, and turn smoothing.
@@ -167,19 +193,19 @@ import json
 import numpy as np
 
 from ocean_router.core.grid import GridSpec
-from ocean_router.core.memmaps import MemMapLoader
 from ocean_router.data.bathy import load_bathy
+from ocean_router.data.land import LandMask
 from ocean_router.routing.astar_fast import CoarseToFineAStar
 from ocean_router.routing.costs import CostContext, CostWeights
 from ocean_router.land.land_guard import LandGuardParams, build_land_index, route_with_land_guard
 
 grid = GridSpec.from_file("configs/grid_1nm.json")
-land_mask = MemMapLoader("data/processed/land/land_mask_strict_1nm.npy", dtype=np.uint8).array
+land_mask = LandMask("data/processed/land/land_mask_strict_1nm.npy")
 bathy = load_bathy("data/processed/bathy/depth_1nm.npy")
 
 class GlobalRouter:
     def __init__(self) -> None:
-        self.router = CoarseToFineAStar(grid, bathy.depth, land_mask=land_mask)
+        self.router = CoarseToFineAStar(grid, bathy, land_mask=land_mask)
         self.context = CostContext(bathy=bathy, tss=None, density=None, grid_dx=grid.dx, grid_dy=grid.dy, land=None, grid=grid)
         self.weights = CostWeights()
 

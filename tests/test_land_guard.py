@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
+import json
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +11,7 @@ import fiona
 from shapely.geometry import box, mapping
 
 from ocean_router.core.grid import GridSpec
+from ocean_router.data.land import LandMask
 from ocean_router.land.land_guard import (
     LandGuardParams,
     build_land_index,
@@ -141,3 +143,62 @@ def test_tiny_island_triggers_refinement(tmp_path: Path) -> None:
 
     assert report.is_ok
     assert len(route) > 2
+
+
+def _write_tiled_raster(array: np.ndarray, tiles_dir: Path, grid: GridSpec, tile_size: int) -> Path:
+    tiles_dir.mkdir(parents=True, exist_ok=True)
+    height, width = array.shape
+    tiles_x = int(np.ceil(width / tile_size))
+    tiles_y = int(np.ceil(height / tile_size))
+    for ty in range(tiles_y):
+        for tx in range(tiles_x):
+            y0 = ty * tile_size
+            x0 = tx * tile_size
+            y1 = min(height, y0 + tile_size)
+            x1 = min(width, x0 + tile_size)
+            tile_path = tiles_dir / f"tile_{tx}_{ty}.npy"
+            np.save(tile_path, array[y0:y1, x0:x1])
+    meta_path = tiles_dir / "meta.json"
+    meta = {
+        "xmin": grid.xmin,
+        "ymax": grid.ymax,
+        "dx": grid.dx,
+        "dy": grid.dy,
+        "width": width,
+        "height": height,
+        "tile_size": tile_size,
+        "dtype": str(array.dtype),
+        "nodata": 0,
+        "tiles_x": tiles_x,
+        "tiles_y": tiles_y,
+        "tiles_dir": str(tiles_dir),
+    }
+    meta_path.write_text(json.dumps(meta))
+    return meta_path
+
+
+def test_tiled_landmask_matches_memmap(tmp_path: Path) -> None:
+    grid = GridSpec(crs="EPSG:4326", dx=1.0, dy=1.0, xmin=0.0, ymax=64.0, width=64, height=64)
+    array = np.zeros((grid.height, grid.width), dtype=np.uint8)
+    array[10:20, 5:15] = 1
+    memmap_path = tmp_path / "land.npy"
+    np.save(memmap_path, array)
+
+    tiles_meta = _write_tiled_raster(array, tmp_path / "tiles", grid, tile_size=16)
+
+    memmap_mask = LandMask(memmap_path)
+    tiled_mask = LandMask(
+        path=None,
+        tiles_meta_path=tiles_meta,
+        distance_cache_path=tmp_path / "distance.npy",
+    )
+
+    rng = np.random.default_rng(123)
+    for _ in range(200):
+        y = int(rng.integers(0, grid.height))
+        x = int(rng.integers(0, grid.width))
+        assert memmap_mask.sample(y, x) == tiled_mask.sample(y, x)
+
+    window_mem = memmap_mask.window(8, 8, 12, 12)
+    window_tile = tiled_mask.window(8, 8, 12, 12)
+    assert np.array_equal(window_mem, window_tile)

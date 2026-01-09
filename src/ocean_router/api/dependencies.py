@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from ocean_router.core.grid import GridSpec
 from ocean_router.core.config import get_config
-from ocean_router.data.bathy import Bathy, load_bathy
+from ocean_router.data.bathy import Bathy, load_bathy, load_bathy_tiles
 from ocean_router.data.canals import Canal, load_canals
 from ocean_router.data.land import LandMask
 from ocean_router.data.tss import TSSFields
@@ -88,6 +88,9 @@ def get_grid_spec() -> GridSpec:
 @lru_cache(maxsize=1)
 def get_bathy() -> Optional[Bathy]:
     suffix = _data_suffix()
+    tiles_meta = _project_root() / "data" / "processed" / "bathy_tiles" / suffix / "meta.json"
+    if tiles_meta.exists():
+        return load_bathy_tiles(tiles_meta)
     path = _project_root() / "data" / "processed" / "bathy" / f"depth_{suffix}.npy"
     if not path.exists():
         return None
@@ -97,6 +100,20 @@ def get_bathy() -> Optional[Bathy]:
 @lru_cache(maxsize=1)
 def get_land_mask() -> Optional[LandMask]:
     suffix = _data_suffix()
+    tiles_dir = _project_root() / "data" / "processed" / "land_tiles" / suffix
+    tiles_meta = tiles_dir / "meta.json"
+    buffered_tiles_meta = (tiles_dir.parent / f"{suffix}_buffered" / "meta.json")
+    distance_tiles_meta = (tiles_dir.parent / f"{suffix}_distance" / "meta.json")
+    if tiles_meta.exists():
+        distance_cache = tiles_dir / "distance.npy"
+        return LandMask(
+            path=None,
+            buffered_path=None,
+            distance_cache_path=distance_cache,
+            tiles_meta_path=tiles_meta,
+            buffered_tiles_meta_path=buffered_tiles_meta if buffered_tiles_meta.exists() else None,
+            distance_tiles_meta_path=distance_tiles_meta if distance_tiles_meta.exists() else None,
+        )
     # Prefer explicit strict routing mask if present (produced by build_land_mask --purpose strict)
     strict_path = _project_root() / "data" / "processed" / "land" / f"land_mask_strict_{suffix}.npy"
     base_path = strict_path if strict_path.exists() else _project_root() / "data" / "processed" / "land" / f"land_mask_{suffix}.npy"
@@ -114,23 +131,29 @@ def get_land_mask() -> Optional[LandMask]:
 
 @lru_cache(maxsize=1)
 def get_tss() -> Optional[TSSFields]:
+    cfg = get_config()
     suffix = _data_suffix()
     tss_dir = _project_root() / "data" / "processed" / "tss"
     lane_mask = tss_dir / f"tss_lane_mask_{suffix}.npy"
     dir_field = tss_dir / f"tss_dir_field_{suffix}.npy"
     sep_mask = tss_dir / f"tss_sepzone_mask_{suffix}.npy"
     sep_boundary = tss_dir / f"tss_sepboundary_mask_{suffix}.npy"
-    lane_graph = tss_dir / f"tss_lane_graph_{suffix}.npz"
     
     if not lane_mask.exists() or not dir_field.exists():
         return None
+
+    segment_geojson = None
+    if cfg.tss.segment_geojson:
+        segment_geojson = Path(cfg.tss.segment_geojson)
+        if not segment_geojson.is_absolute():
+            segment_geojson = _project_root() / segment_geojson
     
     return TSSFields(
         lane_mask_path=lane_mask,
         direction_field_path=dir_field,
         sepzone_mask_path=sep_mask if sep_mask.exists() else None,
         sepboundary_mask_path=sep_boundary if sep_boundary.exists() else None,
-        lane_graph_path=lane_graph if lane_graph.exists() else None,
+        segment_geojson_path=segment_geojson,
     )
 
 

@@ -53,6 +53,7 @@ class TSSConfig:
     vector_graph_entry_angle_weight: float = 0.5
     vector_graph_entry_max_angle_deg: float = 80.0
     vector_graph_detection_radius_cells: int = 2
+    segment_geojson: Optional[str] = None
 
 
 @dataclass

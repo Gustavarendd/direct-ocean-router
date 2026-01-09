@@ -9,33 +9,10 @@ import numpy as np
 
 from ocean_router.core.geodesy import angle_diff_deg
 from ocean_router.core.memmaps import MemMapLoader
+from ocean_router.tss.tss_strtree import TSSSegmentIndex
 
 if TYPE_CHECKING:
     from ocean_router.core.grid import GridSpec
-
-
-@dataclass
-class LaneGraph:
-    nodes_lon: np.ndarray
-    nodes_lat: np.ndarray
-    edges_u: np.ndarray
-    edges_v: np.ndarray
-    edges_weight: np.ndarray
-    edges_flow_bearing: np.ndarray
-    edges_length_nm: np.ndarray
-
-    @classmethod
-    def from_npz(cls, path: Path) -> "LaneGraph":
-        data = np.load(path)
-        return cls(
-            nodes_lon=data["nodes_lon"],
-            nodes_lat=data["nodes_lat"],
-            edges_u=data["edges_u"],
-            edges_v=data["edges_v"],
-            edges_weight=data["edges_weight"],
-            edges_flow_bearing=data["edges_flow_bearing"],
-            edges_length_nm=data["edges_length_nm"],
-        )
 
 
 @dataclass
@@ -44,25 +21,18 @@ class TSSFields:
     direction_field_path: Path
     sepzone_mask_path: Optional[Path] = None
     sepboundary_mask_path: Optional[Path] = None
-    lane_graph_path: Optional[Path] = None
+    segment_geojson_path: Optional[Path] = None
 
     def __post_init__(self) -> None:
         self._lane_mask = MemMapLoader(self.lane_mask_path, dtype=np.uint8)
         self._dir_field = MemMapLoader(self.direction_field_path, dtype=np.int16)
         self._sepzone_mask = MemMapLoader(self.sepzone_mask_path, dtype=np.uint8) if self.sepzone_mask_path else None
         self._sepboundary_mask = MemMapLoader(self.sepboundary_mask_path, dtype=np.uint8) if self.sepboundary_mask_path else None
-        # Lane graph data may be stored as a .npz (nodes/edges arrays) or
-        # as a memmapped array of integer segment endpoints. Load the
-        # .npz into a LaneGraph dataclass so callers expecting attributes
-        # like `nodes_lon` work correctly; otherwise fall back to the
-        # MemMapLoader for other binary formats.
-        if self.lane_graph_path:
-            if self.lane_graph_path.suffix == ".npz":
-                self._lane_graph = LaneGraph.from_npz(self.lane_graph_path)
-            else:
-                self._lane_graph = MemMapLoader(self.lane_graph_path, dtype=np.int32)
-        else:
-            self._lane_graph = None
+        self._segment_index = (
+            TSSSegmentIndex.from_geojson(self.segment_geojson_path)
+            if self.segment_geojson_path and self.segment_geojson_path.exists()
+            else None
+        )
 
     @property
     def lane_mask(self) -> np.memmap:
@@ -81,22 +51,8 @@ class TSSFields:
         return self._sepboundary_mask.array if self._sepboundary_mask else None
 
     @property
-    def lane_graph(self) -> Optional[LaneGraph | np.memmap]:
-        """Return either a `LaneGraph` (for .npz files) or a memmap array.
-
-        Some callers expect a `LaneGraph` with attributes like `nodes_lon`,
-        while others expect a memmapped array of integer segment endpoints.
-        This accessor returns whichever representation was loaded.
-        """
-        if self._lane_graph is None:
-            return None
-        # MemMapLoader instances expose `.array`, LaneGraph does not
-        if isinstance(self._lane_graph, MemMapLoader):
-            return self._lane_graph.array
-        return self._lane_graph
-
-    def has_lane_graph(self) -> bool:
-        return self._lane_graph is not None
+    def segment_index(self) -> Optional[TSSSegmentIndex]:
+        return self._segment_index
 
     def alignment_penalty(
         self, 
@@ -110,6 +66,7 @@ class TSSFields:
         goal_bearing: float = None,
         max_lane_deviation_deg: float = 60.0,
         proximity_check_radius: int = 2,
+        grid: Optional['GridSpec'] = None,
     ) -> float:
         """Calculate alignment penalty, checking along the entire path.
         
@@ -119,6 +76,11 @@ class TSSFields:
         If goal_bearing is provided, penalizes TSS lanes that deviate too much
         from the overall route direction.
         """
+        if self._segment_index is not None and grid is not None and prev_y is not None and prev_x is not None:
+            lon0, lat0 = grid.xy_to_lonlat(prev_x, prev_y)
+            lon1, lat1 = grid.xy_to_lonlat(x, y)
+            return self._segment_index.penalty_for_move(lon0, lat0, lon1, lat1)
+
         # If we have a previous position, check alignment along the entire path
         if prev_y is not None and prev_x is not None:
             penalty = self._alignment_along_path(
@@ -571,75 +533,6 @@ class TSSFields:
                 y += sy
 
         return False
-
-    def snap_point_to_lane(self, x: int, y: int) -> Tuple[int, int]:
-        """Project a grid point to the nearest lane graph segment."""
-        lane_graph = self.lane_graph
-        if not isinstance(lane_graph, np.ndarray) or not lane_graph.size:
-            return x, y
-
-        px = float(x)
-        py = float(y)
-        best_dist = float("inf")
-        best_point = (x, y)
-
-        for x0, y0, x1, y1 in lane_graph:
-            vx = float(x1 - x0)
-            vy = float(y1 - y0)
-            denom = vx * vx + vy * vy
-            if denom == 0:
-                proj_x, proj_y = float(x0), float(y0)
-            else:
-                t = ((px - x0) * vx + (py - y0) * vy) / denom
-                t = max(0.0, min(1.0, t))
-                proj_x = float(x0) + t * vx
-                proj_y = float(y0) + t * vy
-
-            dx = px - proj_x
-            dy = py - proj_y
-            dist = dx * dx + dy * dy
-            if dist < best_dist:
-                best_dist = dist
-                best_point = (int(round(proj_x)), int(round(proj_y)))
-
-        return best_point
-
-    def snap_segment_to_lane(self, p0: Tuple[int, int], p1: Tuple[int, int]) -> Tuple[Tuple[int, int], Tuple[int, int]]:
-        """Snap segment endpoints to the nearest lane graph segments if lane intersection occurs."""
-        lane_graph = self.lane_graph
-        if not isinstance(lane_graph, np.ndarray) or not lane_graph.size:
-            return p0, p1
-        x0, y0 = p0
-        x1, y1 = p1
-        if not self.line_intersects_lane(y0, x0, y1, x1):
-            return p0, p1
-        return self.snap_point_to_lane(x0, y0), self.snap_point_to_lane(x1, y1)
-
-    def snap_path_xy(self, path_xy: Iterable[Tuple[int, int]]) -> list[Tuple[int, int]]:
-        """Snap path points to the lane graph when segments intersect lanes."""
-        lane_graph = self.lane_graph
-        if not isinstance(lane_graph, np.ndarray) or not lane_graph.size:
-            return list(path_xy)
-
-        path_list = list(path_xy)
-        if len(path_list) < 2:
-            return path_list
-
-        snap_indices = set()
-        for i in range(len(path_list) - 1):
-            x0, y0 = path_list[i]
-            x1, y1 = path_list[i + 1]
-            if self.line_intersects_lane(y0, x0, y1, x1):
-                snap_indices.add(i)
-                snap_indices.add(i + 1)
-
-        snapped = []
-        for i, (x, y) in enumerate(path_list):
-            if i in snap_indices:
-                x, y = self.snap_point_to_lane(x, y)
-            if not snapped or (x, y) != snapped[-1]:
-                snapped.append((x, y))
-        return snapped
 
     def blocked(self, y: int, x: int) -> bool:
         if self.sepzone_mask is None:
