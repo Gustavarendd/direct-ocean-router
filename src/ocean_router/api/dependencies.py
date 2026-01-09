@@ -13,6 +13,7 @@ from ocean_router.data.bathy import Bathy, load_bathy
 from ocean_router.data.canals import Canal, load_canals
 from ocean_router.data.land import LandMask
 from ocean_router.data.tss import TSSFields
+from ocean_router.data.tss_vector import TSSVectorGraph, load_or_build_tss_vector_graph
 from ocean_router.routing.costs import CostWeights
 
 
@@ -131,6 +132,30 @@ def get_canals() -> List[Canal]:
     """Load canal overrides from config (if present)."""
     path = _project_root() / "configs" / "canals.yaml"
     return load_canals(path)
+
+
+@lru_cache(maxsize=1)
+def get_tss_vector_graph() -> Optional[TSSVectorGraph]:
+    cfg = get_config()
+    if not cfg.tss.vector_graph_enabled:
+        return None
+    tss_dir = _project_root() / "data" / "processed" / "tss"
+    if cfg.tss.vector_graph_cache_path:
+        cache_path = Path(cfg.tss.vector_graph_cache_path)
+        if not cache_path.is_absolute():
+            cache_path = _project_root() / cache_path
+    else:
+        cache_path = tss_dir / "tss_vector_graph.pkl"
+    geojson_path = None
+    if cfg.tss.vector_graph_geojson:
+        geojson_path = Path(cfg.tss.vector_graph_geojson)
+        if not geojson_path.is_absolute():
+            geojson_path = _project_root() / geojson_path
+    return load_or_build_tss_vector_graph(
+        geojson_path,
+        cache_path,
+        cfg.tss.vector_graph_sepzone_buffer_nm,
+    )
 
 
 @lru_cache(maxsize=1)

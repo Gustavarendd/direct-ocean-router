@@ -66,6 +66,17 @@ tss:
   lane_graph_lock_enabled: false
   lane_graph_lock_radius_nm: 0.25
 
+  # Vector-lane hybrid routing
+  vector_graph_enabled: true
+  vector_graph_geojson: "data/raw/separation_lanes_with_direction.geojson"
+  vector_graph_cache_path: "data/processed/tss/tss_vector_graph.pkl"
+  vector_graph_sepzone_buffer_nm: 0.2
+  vector_graph_connector_radius_nm: 5.0
+  vector_graph_max_connectors: 50
+  vector_graph_entry_angle_weight: 0.5
+  vector_graph_entry_max_angle_deg: 80.0
+  vector_graph_detection_radius_cells: 6
+
 # ----------------------------------------------------------------------
 # Land & Depth Settings
 # ----------------------------------------------------------------------

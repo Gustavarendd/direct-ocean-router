@@ -29,6 +29,7 @@ src/ocean_router/data/density.py
 src/ocean_router/data/land.py
 src/ocean_router/data/passages.py
 src/ocean_router/data/tss.py
+src/ocean_router/data/tss_vector.py
 src/ocean_router/routing/__init__.py
 src/ocean_router/routing/astar.py
 src/ocean_router/routing/astar_fast.py
@@ -38,3 +39,4 @@ src/ocean_router/routing/costs.py
 src/ocean_router/routing/lane_graph.py
 src/ocean_router/routing/reconstruct.py
 src/ocean_router/routing/simplify.py
+src/ocean_router/routing/tss_hybrid.py

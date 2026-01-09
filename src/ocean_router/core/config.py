@@ -44,6 +44,15 @@ class TSSConfig:
     lane_graph_snap_max_nm: float = 20.0
     lane_graph_lock_enabled: bool = False
     lane_graph_lock_radius_nm: float = 0.5
+    vector_graph_enabled: bool = True
+    vector_graph_geojson: Optional[str] = None
+    vector_graph_cache_path: Optional[str] = None
+    vector_graph_sepzone_buffer_nm: float = 0.2
+    vector_graph_connector_radius_nm: float = 5.0
+    vector_graph_max_connectors: int = 5
+    vector_graph_entry_angle_weight: float = 0.5
+    vector_graph_entry_max_angle_deg: float = 80.0
+    vector_graph_detection_radius_cells: int = 2
 
 
 @dataclass

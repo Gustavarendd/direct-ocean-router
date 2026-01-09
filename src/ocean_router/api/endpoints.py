@@ -7,7 +7,15 @@ from typing import List, Tuple, Optional
 from fastapi import APIRouter, Depends, HTTPException
 
 from ocean_router.api.schemas import RouteRequest, RouteResponse
-from ocean_router.api.dependencies import get_grid_spec, get_bathy, get_land_mask, get_tss, get_cost_weights, get_canals
+from ocean_router.api.dependencies import (
+    get_grid_spec,
+    get_bathy,
+    get_land_mask,
+    get_tss,
+    get_cost_weights,
+    get_canals,
+    get_tss_vector_graph,
+)
 from ocean_router.core.geodesy import rhumb_interpolate, rhumb_distance_nm
 from ocean_router.core.grid import GridSpec
 from ocean_router.core.config import get_config
@@ -15,6 +23,7 @@ from ocean_router.data.bathy import Bathy
 from ocean_router.data.canals import Canal, canal_mask_coarse, canal_mask_window
 from ocean_router.data.land import LandMask
 from ocean_router.data.tss import TSSFields
+from ocean_router.data.tss_vector import TSSVectorGraph
 from ocean_router.routing.costs import CostContext, CostWeights
 from ocean_router.routing.corridor import build_corridor, build_corridor_with_arrays, precompute_corridor_arrays
 from ocean_router.routing.astar import CorridorAStar
@@ -29,6 +38,7 @@ from ocean_router.routing.astar_fast import (
 from ocean_router.routing.astar_numba import FastNumbaCorridorAStar, NUMBA_AVAILABLE
 from ocean_router.routing.lane_graph import build_lane_graph_macro_path
 from ocean_router.routing.simplify import simplify_path, simplify_between_tss_boundaries, tss_aware_simplify, repair_tss_violations
+from ocean_router.routing.tss_hybrid import refine_path_with_tss_vector
 
 
 def _is_open_ocean_route(
@@ -131,6 +141,7 @@ def compute_route(
     bathy: Optional[Bathy],
     land: Optional[LandMask],
     tss: Optional[TSSFields],
+    tss_vector: Optional[TSSVectorGraph],
     canals: Optional[List[Canal]],
     weights: CostWeights,
     draft_m: float = 10.0,
@@ -201,6 +212,7 @@ def compute_route(
         print(f"[ROUTE] CostContext created with land={'present' if land else 'None'}")
 
         lane_macro_path: Optional[List[Tuple[int, int]]] = None
+        macro_backbone: Optional[List[Tuple[int, int]]] = None
         if (
             tss is not None
             and tss.lane_graph is not None
@@ -253,6 +265,7 @@ def compute_route(
 
         t0 = time.perf_counter()
         def _macro_guided_corridor() -> Optional[AStarResult]:
+            nonlocal macro_backbone
             try:
                 scale_try = int(getattr(cfg.algorithm, 'coarse_scale', 8))
                 land_mask_macro = land.base if land else None
@@ -285,6 +298,7 @@ def compute_route(
                 cell_nm = max(grid.dx * 60.0, 1e-6)
                 width_cells = max(2, int(round(corridor_width_nm / cell_nm)))
                 full_macro = [(sx, sy)] + macro_path + [(gx, gy)]
+                macro_backbone = full_macro
                 corridor_mask, x_off, y_off = _build_corridor_from_path(
                     full_macro,
                     (grid.height, grid.width),
@@ -454,6 +468,7 @@ def compute_route(
                             search_time = t_coarse_try
                         else:
                             print("[TIMING] Building corridor...")
+                            corridor_backbone = macro_backbone or lane_macro_path
                             corridor_mask, x_off, y_off, pre = build_corridor_with_arrays(
                                 grid, start, end,
                                 land_mask=land.buffered if land else None,
@@ -462,13 +477,14 @@ def compute_route(
                                 min_draft=min_draft,
                                 weights=weights,
                                 canals=canals,
-                                corridor_path=lane_macro_path,
-                                corridor_backbone=lane_macro_path,
+                                corridor_path=corridor_backbone,
+                                corridor_backbone=corridor_backbone,
                             )
                             astar = CorridorAStarImpl(grid, corridor_mask, x_off, y_off, precomputed=pre)
             except Exception as e:
                 print(f"[TIMING] Coarse-to-fine trial error: {e}; falling back to corridor build")
                 print("[TIMING] Building corridor...")
+                corridor_backbone = macro_backbone or lane_macro_path
                 corridor_mask, x_off, y_off, pre = build_corridor_with_arrays(
                     grid, start, end,
                     land_mask=land.buffered if land else None,
@@ -477,8 +493,8 @@ def compute_route(
                     min_draft=min_draft,
                     weights=weights,
                     canals=canals,
-                    corridor_path=lane_macro_path,
-                    corridor_backbone=lane_macro_path,
+                    corridor_path=corridor_backbone,
+                    corridor_backbone=corridor_backbone,
                 )
                 astar = CorridorAStarImpl(grid, corridor_mask, x_off, y_off, precomputed=pre)
         print(f"[TIMING] Algorithm setup: {(time.perf_counter() - t0)*1000:.1f}ms")
@@ -502,6 +518,7 @@ def compute_route(
         if not result.success:
             print("[FALLBACK] Coarse-to-fine A* failed; trying corridor-based A*")
             try:
+                corridor_backbone = macro_backbone or lane_macro_path
                 corridor_mask, x_off, y_off, pre = build_corridor_with_arrays(
                     grid, start, end,
                     land_mask=land.buffered if land else None,
@@ -510,8 +527,8 @@ def compute_route(
                     min_draft=min_draft,
                     weights=weights,
                     canals=canals,
-                    corridor_path=lane_macro_path,
-                    corridor_backbone=lane_macro_path,
+                    corridor_path=corridor_backbone,
+                    corridor_backbone=corridor_backbone,
                 )
                 fallback_astar = CorridorAStarImpl(grid, corridor_mask, x_off, y_off, precomputed=pre)
                 t0_fb = time.perf_counter()
@@ -533,6 +550,7 @@ def compute_route(
                     for factor in (1.5, 2.0, 4.0):
                         expanded_width = corridor_width_nm * factor
                         print(f"[FALLBACK] Trying expanded corridor width: {expanded_width} nm (factor={factor})")
+                        corridor_backbone = macro_backbone or lane_macro_path
                         corridor_mask, x_off, y_off, pre_e = build_corridor_with_arrays(
                             grid, start, end,
                             land_mask=land.buffered if land else None,
@@ -541,12 +559,13 @@ def compute_route(
                             min_draft=min_draft,
                             weights=weights,
                             canals=canals,
-                            corridor_path=lane_macro_path,
-                            corridor_backbone=lane_macro_path,
+                            corridor_path=corridor_backbone,
+                            corridor_backbone=corridor_backbone,
                         )
                         expanded_astar = CorridorAStarImpl(grid, corridor_mask, x_off, y_off, precomputed=pre_e)
                         t0_e = time.perf_counter()
-                        e_res = expanded_astar.search(start, end, context, weights, min_draft, heuristic_weight=heuristic_weight)
+                        expanded_heuristic = min(3.0, max(search_heuristic, heuristic_weight * factor))
+                        e_res = expanded_astar.search(start, end, context, weights, min_draft, heuristic_weight=expanded_heuristic)
                         t_e = time.perf_counter() - t0_e
                         print(f"[TIMING] Expanded corridor A* ({factor}x) search: {t_e*1000:.1f}ms ({t_e:.2f}s)")
                         if e_res.success:
@@ -575,6 +594,7 @@ def compute_route(
                         tss_disable_lane_smoothing=False,
                     )
                     t0_r = time.perf_counter()
+                    corridor_backbone = macro_backbone or lane_macro_path
                     r_corridor, r_x_off, r_y_off, r_pre = build_corridor_with_arrays(
                         grid, start, end,
                         land_mask=land.buffered if land else None,
@@ -583,8 +603,8 @@ def compute_route(
                         min_draft=min_draft,
                         weights=weights,
                         canals=canals,
-                        corridor_path=lane_macro_path,
-                        corridor_backbone=lane_macro_path,
+                        corridor_path=corridor_backbone,
+                        corridor_backbone=corridor_backbone,
                     )
                     r_res = CorridorAStarImpl(grid, r_corridor, r_x_off, r_y_off, precomputed=r_pre).search(start, end, relaxed_ctx, weights, min_draft, heuristic_weight=heuristic_weight)
                     t_r = time.perf_counter() - t0_r
@@ -614,6 +634,7 @@ def compute_route(
                         tss_disable_lane_smoothing=tss_disable_lane_smoothing,
                     )
                     t0_r2 = time.perf_counter()
+                    corridor_backbone = macro_backbone or lane_macro_path
                     r2_corridor, r2_x_off, r2_y_off, r2_pre = build_corridor_with_arrays(
                         grid, start, end,
                         land_mask=None,
@@ -622,8 +643,8 @@ def compute_route(
                         min_draft=min_draft,
                         weights=weights,
                         canals=canals,
-                        corridor_path=lane_macro_path,
-                        corridor_backbone=lane_macro_path,
+                        corridor_path=corridor_backbone,
+                        corridor_backbone=corridor_backbone,
                     )
                     r2_res = CorridorAStarImpl(grid, r2_corridor, r2_x_off, r2_y_off, precomputed=r2_pre).search(start, end, relaxed_ctx2, weights, min_draft, heuristic_weight=heuristic_weight)
                     t_r2 = time.perf_counter() - t0_r2
@@ -653,6 +674,7 @@ def compute_route(
                         tss_disable_lane_smoothing=False,
                     )
                     t0_r3 = time.perf_counter()
+                    corridor_backbone = macro_backbone or lane_macro_path
                     r3_corridor, r3_x_off, r3_y_off, r3_pre = build_corridor_with_arrays(
                         grid, start, end,
                         land_mask=None,
@@ -661,8 +683,8 @@ def compute_route(
                         min_draft=min_draft,
                         weights=weights,
                         canals=canals,
-                        corridor_path=lane_macro_path,
-                        corridor_backbone=lane_macro_path,
+                        corridor_path=corridor_backbone,
+                        corridor_backbone=corridor_backbone,
                     )
                     r3_res = CorridorAStarImpl(grid, r3_corridor, r3_x_off, r3_y_off, precomputed=r3_pre).search(start, end, relaxed_ctx3, weights, min_draft, heuristic_weight=heuristic_weight)
                     t_r3 = time.perf_counter() - t0_r3
@@ -763,7 +785,25 @@ def compute_route(
             if violations > 0:
                 print(f"[FINAL PATH] Total TSS wrong-way violations: {violations}")
         print(f"[TIMING] TSS violation check: {(time.perf_counter() - t0)*1000:.1f}ms")
-        
+
+        if tss and tss_vector and cfg.tss.vector_graph_enabled and result.success:
+            t0 = time.perf_counter()
+            refined = refine_path_with_tss_vector(
+                result.path,
+                grid,
+                tss,
+                tss_vector,
+                detection_radius_cells=cfg.tss.vector_graph_detection_radius_cells,
+                connector_radius_nm=cfg.tss.vector_graph_connector_radius_nm,
+                max_connectors=cfg.tss.vector_graph_max_connectors,
+                entry_angle_weight=cfg.tss.vector_graph_entry_angle_weight,
+                entry_max_angle_deg=cfg.tss.vector_graph_entry_max_angle_deg,
+            )
+            if refined != result.path:
+                print(f"[TSS VECTOR] Replaced path segments using lane graph ({len(result.path)} -> {len(refined)} points)")
+                result.path = refined
+            print(f"[TIMING] TSS vector refine: {(time.perf_counter() - t0)*1000:.1f}ms")
+
         if not result.success:
             warnings.append("A* search did not find a valid path; returning rhumb line.")
             distance = rhumb_distance_nm(start[0], start[1], end[0], end[1])
@@ -839,6 +879,7 @@ def route(
     bathy: Optional[Bathy] = Depends(get_bathy),
     land: Optional[LandMask] = Depends(get_land_mask),
     tss: Optional[TSSFields] = Depends(get_tss),
+    tss_vector: Optional[TSSVectorGraph] = Depends(get_tss_vector_graph),
     canals: List[Canal] = Depends(get_canals),
     weights: CostWeights = Depends(get_cost_weights),
 ) -> RouteResponse:
@@ -877,6 +918,7 @@ def route(
             bathy,
             land,
             tss,
+            tss_vector,
             canals,
             weights,
             draft_m,
@@ -892,6 +934,7 @@ def route(
                 bathy,
                 land,
                 tss,
+                tss_vector,
                 canals,
                 weights,
                 draft_m,
