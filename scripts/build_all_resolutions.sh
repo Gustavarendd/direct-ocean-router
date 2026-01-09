@@ -31,14 +31,20 @@ build_resolution() {
         return 1
     fi
     
-    # Build land mask
+    # Build land masks (strict for routing, visual for display)
     if [ -f "$LAND_SHP" ]; then
         echo ""
-        echo "--- Building land mask at ${RES} ---"
+        echo "--- Building land masks at ${RES} ---"
         python scripts/build_land_mask.py \
             --grid "$GRID_FILE" \
             --resolution "$RES" \
-            --land "$LAND_SHP"
+            --land "$LAND_SHP" \
+            --purpose strict
+        python scripts/build_land_mask.py \
+            --grid "$GRID_FILE" \
+            --resolution "$RES" \
+            --land "$LAND_SHP" \
+            --purpose visual
     else
         echo "SKIP: Land shapefile not found at $LAND_SHP"
     fi

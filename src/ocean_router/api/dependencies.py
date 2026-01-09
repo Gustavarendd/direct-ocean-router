@@ -98,7 +98,10 @@ def get_land_mask() -> Optional[LandMask]:
     # Prefer explicit strict routing mask if present (produced by build_land_mask --purpose strict)
     strict_path = _project_root() / "data" / "processed" / "land" / f"land_mask_strict_{suffix}.npy"
     base_path = strict_path if strict_path.exists() else _project_root() / "data" / "processed" / "land" / f"land_mask_{suffix}.npy"
-    buffered_path = _project_root() / "data" / "processed" / "land" / f"land_mask_{suffix}_buffered.npy"
+    if strict_path.exists():
+        buffered_path = _project_root() / "data" / "processed" / "land" / f"land_mask_strict_{suffix}_buffered.npy"
+    else:
+        buffered_path = _project_root() / "data" / "processed" / "land" / f"land_mask_{suffix}_buffered.npy"
     
     if not base_path.exists():
         return None

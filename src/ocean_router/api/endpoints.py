@@ -303,7 +303,7 @@ def compute_route(
                 corridor_mask, x_off, y_off = _build_corridor_from_path(
                     full_macro,
                     (grid.height, grid.width),
-                    land.buffered if land else None,
+                    land.base if land else None,
                     width_cells,
                 )
                 # Ensure start/end are inside corridor
@@ -352,7 +352,7 @@ def compute_route(
                     _coarse_to_fine_cache_long = CoarseToFineAStar(
                         grid,
                         bathy.depth,
-                        land_mask=land.buffered if land else None,
+                        land_mask=land.base if land else None,
                         coarse_scale=cfg.algorithm.coarse_scale,
                         corridor_width_nm=cfg.corridor.width_long_nm,
                         coarse_override=canal_coarse_override,
@@ -368,7 +368,7 @@ def compute_route(
                     _coarse_to_fine_cache_short = CoarseToFineAStar(
                         grid,
                         bathy.depth,
-                        land_mask=land.buffered if land else None,
+                        land_mask=land.base if land else None,
                         coarse_scale=cfg.algorithm.coarse_scale,
                         corridor_width_nm=cfg.corridor.width_short_nm,
                         coarse_override=canal_coarse_override,
@@ -423,7 +423,7 @@ def compute_route(
                                 lon1, lat1 = grid.xy_to_lonlat(p1[0], p1[1])
                                 seg_corridor, seg_x_off, seg_y_off, seg_pre = build_corridor_with_arrays(
                                     grid, (lon0, lat0), (lon1, lat1),
-                                    land_mask=land.buffered if land else None,
+                                    land_mask=land.base if land else None,
                                     width_nm=corridor_width_nm,
                                     context=context,
                                     min_draft=min_draft,
@@ -452,7 +452,7 @@ def compute_route(
                             _coarse_to_fine_cache_short = CoarseToFineAStar(
                                 grid,
                                 bathy.depth,
-                                land_mask=land.buffered if land else None,
+                                land_mask=land.base if land else None,
                                 coarse_scale=cfg.algorithm.coarse_scale,
                                 corridor_width_nm=cfg.corridor.width_short_nm,
                                 coarse_override=canal_coarse_override,
@@ -472,7 +472,7 @@ def compute_route(
                             corridor_backbone = macro_backbone or lane_macro_path
                             corridor_mask, x_off, y_off, pre = build_corridor_with_arrays(
                                 grid, start, end,
-                                land_mask=land.buffered if land else None,
+                                land_mask=land.base if land else None,
                                 width_nm=corridor_width_nm,
                                 context=context,
                                 min_draft=min_draft,
@@ -488,7 +488,7 @@ def compute_route(
                 corridor_backbone = macro_backbone or lane_macro_path
                 corridor_mask, x_off, y_off, pre = build_corridor_with_arrays(
                     grid, start, end,
-                    land_mask=land.buffered if land else None,
+                    land_mask=land.base if land else None,
                     width_nm=corridor_width_nm,
                     context=context,
                     min_draft=min_draft,
@@ -522,7 +522,7 @@ def compute_route(
                 corridor_backbone = macro_backbone or lane_macro_path
                 corridor_mask, x_off, y_off, pre = build_corridor_with_arrays(
                     grid, start, end,
-                    land_mask=land.buffered if land else None,
+                    land_mask=land.base if land else None,
                     width_nm=corridor_width_nm,
                     context=context,
                     min_draft=min_draft,
@@ -554,7 +554,7 @@ def compute_route(
                         corridor_backbone = macro_backbone or lane_macro_path
                         corridor_mask, x_off, y_off, pre_e = build_corridor_with_arrays(
                             grid, start, end,
-                            land_mask=land.buffered if land else None,
+                            land_mask=land.base if land else None,
                             width_nm=expanded_width,
                             context=context,
                             min_draft=min_draft,
@@ -598,7 +598,7 @@ def compute_route(
                     corridor_backbone = macro_backbone or lane_macro_path
                     r_corridor, r_x_off, r_y_off, r_pre = build_corridor_with_arrays(
                         grid, start, end,
-                        land_mask=land.buffered if land else None,
+                        land_mask=land.base if land else None,
                         width_nm=corridor_width_nm,
                         context=relaxed_ctx,
                         min_draft=min_draft,
@@ -706,7 +706,7 @@ def compute_route(
                     scale_global = max(64, int(getattr(cfg.algorithm, 'coarse_scale', 8)) * 8)
                     coarse_mask = _build_global_coarse_mask(
                         bathy.depth,
-                        land.buffered if land else None,
+                        land.base if land else None,
                         min_draft,
                         scale_global,
                         override_mask=canal_mask_coarse(canals, grid, scale_global) if canals else None,
@@ -722,7 +722,7 @@ def compute_route(
                         grid.dy,
                         grid.ymax,
                         bathy.depth,
-                        land.buffered if land else None,
+                        land.base if land else None,
                         min_draft
                     )
                     if macro is not None:
@@ -738,7 +738,7 @@ def compute_route(
                             # Build a narrow corridor for the macro segment
                             seg_corridor, seg_x_off, seg_y_off, seg_pre = build_corridor_with_arrays(
                                 grid, (lon0, lat0), (lon1, lat1),
-                                land_mask=land.buffered if land else None,
+                                land_mask=land.base if land else None,
                                 width_nm=cfg.corridor.width_short_nm,
                                 context=context,
                                 min_draft=min_draft,
