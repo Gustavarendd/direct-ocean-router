@@ -74,7 +74,6 @@ class CostContext:
     land: Optional[LandMask] = None  # Land mask for proximity penalties
     grid: Optional["GridSpec"] = None
     tss_wrong_way_hard: bool = False
-    tss_snap_lane_graph: bool = False
     tss_disable_lane_smoothing: bool = False
 
     def move_cost(
@@ -126,6 +125,7 @@ class CostContext:
                 goal_bearing=goal_bearing if goal_bearing is not None else self.goal_bearing,
                 max_lane_deviation_deg=weights.tss_max_lane_deviation_deg,
                 proximity_check_radius=weights.tss_proximity_check_radius,
+                grid=self.grid,
             )
             # Add boundary crossing penalties
             if prev_y is not None and prev_x is not None:

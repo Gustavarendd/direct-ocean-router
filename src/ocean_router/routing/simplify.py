@@ -387,7 +387,7 @@ def _is_clear_straight_path(
         tss_fields: Optional TSS fields for lane and direction checking
         min_land_distance_cells: Minimum distance from land in grid cells
         check_tss_direction: If True, reject paths that go wrong-way in TSS lanes
-        snap_to_lane_graph: If True, snap endpoints to lane graph for boundary checks
+        snap_to_lane_graph: Deprecated (no effect; lane graphs removed)
         disable_lane_smoothing: If True, disallow straight paths that enter lanes
         
     Returns:
@@ -410,13 +410,8 @@ def _is_clear_straight_path(
             return False
 
         # Reject if a direct segment crosses separation zones or boundary lines
-        if snap_to_lane_graph and tss_fields.has_lane_graph() and tss_fields.line_intersects_lane(y0, x0, y1, x1):
-            (sx0, sy0), (sx1, sy1) = tss_fields.snap_segment_to_lane((x0, y0), (x1, y1))
-            if tss_fields.line_crosses_boundary(sy0, sx0, sy1, sx1):
-                return False
-        else:
-            if tss_fields.line_crosses_boundary(y0, x0, y1, x1):
-                return False
+        if tss_fields.line_crosses_boundary(y0, x0, y1, x1):
+            return False
 
         # Reject if any portion of the straight line would travel the wrong way through a lane
         # Pass grid for accurate geodetic bearing calculation
@@ -487,27 +482,8 @@ def _snap_path_to_lane_graph(
     grid: 'GridSpec',
     tss_fields: Optional['TSSFields'],
 ) -> List[Tuple[float, float]]:
-    """Snap path points to lane graph where segments intersect lanes."""
-    if not path or tss_fields is None or not tss_fields.has_lane_graph():
-        return path
-
-    snap_indices = set()
-    for i in range(len(path) - 1):
-        x0, y0 = grid.lonlat_to_xy(path[i][0], path[i][1])
-        x1, y1 = grid.lonlat_to_xy(path[i + 1][0], path[i + 1][1])
-        if tss_fields.line_intersects_lane(y0, x0, y1, x1):
-            snap_indices.add(i)
-            snap_indices.add(i + 1)
-
-    snapped: List[Tuple[float, float]] = []
-    for i, (lon, lat) in enumerate(path):
-        if i in snap_indices:
-            x, y = grid.lonlat_to_xy(lon, lat)
-            sx, sy = tss_fields.snap_point_to_lane(x, y)
-            lon, lat = grid.xy_to_lonlat(sx, sy)
-        if not snapped or (lon, lat) != snapped[-1]:
-            snapped.append((lon, lat))
-    return snapped
+    """Retain path as-is (lane snapping removed with STRtree refactor)."""
+    return path
 
 
 def _check_tss_lane_status(
@@ -556,7 +532,7 @@ def tss_aware_simplify(
         preserve_points: Points that must be kept
         max_simplify_nm: Maximum distance to simplify over (prevents skipping islands)
         min_land_distance_cells: Minimum distance from land in grid cells
-        snap_to_lane_graph: If True, snap points to lane graph centerlines in TSS regions
+        snap_to_lane_graph: Deprecated (no effect; lane graphs removed)
         disable_lane_smoothing: If True, do not simplify across TSS lanes
         
     Returns:

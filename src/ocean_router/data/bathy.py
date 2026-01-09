@@ -5,14 +5,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional
-
 import numpy as np
 import numba
 
 from ocean_router.core.memmaps import MemMapLoader
+from ocean_router.core.tiled_raster import TiledRaster, TiledRasterArray
 
 
 @numba.jit
@@ -28,15 +25,35 @@ def _depth_penalty_jit(depth: float, nodata: int, y: int, x: int, min_draft: flo
 
 @dataclass
 class Bathy:
-    path: Path
+    path: Optional[Path]
     nodata: int | float
+    tiles_meta_path: Optional[Path] = None
 
     def __post_init__(self) -> None:
-        self.loader = MemMapLoader(self.path, dtype=np.int16)
+        self._tiled = None
+        self.loader = None
+        if self.tiles_meta_path is not None:
+            self._tiled = TiledRaster.open(self.tiles_meta_path)
+            self._depth = TiledRasterArray(self._tiled)
+        elif self.path is not None:
+            self.loader = MemMapLoader(self.path, dtype=np.int16)
+            self._depth = self.loader.array
+        else:
+            raise ValueError("Bathy requires a path or tiles_meta_path")
 
     @property
     def depth(self) -> np.memmap:
-        return self.loader.array
+        return self._depth
+
+    def depth_window(self, y_off: int, x_off: int, height: int, width: int) -> np.ndarray:
+        if self._tiled is not None:
+            return self._tiled.window(y_off, x_off, height, width)
+        return self._depth[y_off:y_off + height, x_off:x_off + width]
+
+    def depth_value(self, y: int, x: int) -> float:
+        if self._tiled is not None:
+            return float(self._tiled.sample_xy(x, y))
+        return float(self._depth[y, x])
 
     def is_safe(self, y: int, x: int, min_draft: float) -> bool:
         """Check if cell is safe for a vessel with given draft.
@@ -48,7 +65,7 @@ class Bathy:
             y, x: Grid coordinates
             min_draft: Minimum required water depth in meters (positive value)
         """
-        depth = float(self.depth[y, x])
+        depth = self.depth_value(y, x)
         if depth == self.nodata:
             return False
         # GEBCO: negative = underwater, positive = above water
@@ -63,7 +80,7 @@ class Bathy:
             min_draft: Minimum required water depth in meters (positive value)
             near_threshold_penalty: Penalty weight for near-threshold depths
         """
-        depth = float(self.depth[y, x])
+        depth = self.depth_value(y, x)
         return _depth_penalty_jit(depth, self.nodata, y, x, min_draft, near_threshold_penalty)
 
 
@@ -71,3 +88,9 @@ def load_bathy(path: str | Path, nodata: Optional[int] = None) -> Bathy:
     if nodata is None:
         nodata = -32768
     return Bathy(Path(path), nodata=nodata)
+
+
+def load_bathy_tiles(meta_path: Path, nodata: Optional[int] = None) -> Bathy:
+    if nodata is None:
+        nodata = -32768
+    return Bathy(path=None, nodata=nodata, tiles_meta_path=meta_path)

@@ -17,6 +17,7 @@ from ocean_router.data.canals import canal_mask_window
 
 if TYPE_CHECKING:
     from ocean_router.data.canals import Canal
+    from ocean_router.data.land import LandMask
 
 
 @dataclass
@@ -29,11 +30,19 @@ class Corridor:
         return bool(self.mask[y - self.y_off, x - self.x_off])
 
 
+def _land_window(land_mask: Optional["LandMask"] | Optional[np.ndarray], y_off: int, x_off: int, h: int, w: int) -> Optional[np.ndarray]:
+    if land_mask is None:
+        return None
+    if hasattr(land_mask, "window"):
+        return land_mask.window(y_off, x_off, h, w)
+    return land_mask[y_off:y_off + h, x_off:x_off + w]
+
+
 def build_corridor(
     grid: GridSpec,
     start: Tuple[float, float],
     end: Tuple[float, float],
-    land_mask: Optional[np.ndarray] = None,
+    land_mask: Optional["LandMask"] | Optional[np.ndarray] = None,
     width_nm: float = 50.0,
     canals: Optional[Sequence["Canal"]] = None,
 ) -> Tuple[np.ndarray, int, int]:
@@ -133,8 +142,8 @@ def build_corridor(
     )
     
     # Remove land from corridor if land mask provided
-    if land_mask is not None:
-        land_window = land_mask[y_off:y_end, x_off:x_end]
+    land_window = _land_window(land_mask, y_off, x_off, h, w)
+    if land_window is not None:
         mask[land_window > 0] = 0
 
     # Carve canals back into the mask if provided
@@ -149,7 +158,7 @@ def build_corridor(
 def build_corridor_from_path(
     grid: GridSpec,
     corridor_path: Sequence[Tuple[int, int]],
-    land_mask: Optional[np.ndarray] = None,
+    land_mask: Optional["LandMask"] | Optional[np.ndarray] = None,
     width_nm: float = 50.0,
     canals: Optional[Sequence["Canal"]] = None,
 ) -> Tuple[np.ndarray, int, int]:
@@ -179,8 +188,8 @@ def build_corridor_from_path(
         x1 = min(w, lx + width_cells + 1)
         mask[y0:y1, x0:x1] = 1
 
-    if land_mask is not None:
-        land_region = land_mask[y_min:y_max, x_min:x_max]
+    land_region = _land_window(land_mask, y_min, x_min, h, w)
+    if land_region is not None:
         mask = mask & (land_region == 0)
 
     if canals:
@@ -195,7 +204,7 @@ def build_corridor_with_arrays(
     grid: GridSpec,
     start: Tuple[float, float],
     end: Tuple[float, float],
-    land_mask: Optional[np.ndarray] = None,
+    land_mask: Optional["LandMask"] | Optional[np.ndarray] = None,
     width_nm: float = 50.0,
     context: Optional[object] = None,
     min_draft: float = 10.0,
@@ -257,38 +266,6 @@ def build_corridor_with_arrays(
     if 0 <= gy_local < mask.shape[0] and 0 <= gx_local < mask.shape[1]:
         mask[gy_local, gx_local] = 1
 
-    if (
-        context is not None
-        and weights is not None
-        and getattr(weights, "tss_lane_graph_lock_enabled", False)
-        and context.tss is not None
-        and context.tss.lane_graph is not None
-        and mask.size
-    ):
-        from ocean_router.routing.lane_graph import lane_graph_mask_window
-
-        cell_nm = max(grid.dx * 60.0, 1e-6)
-        radius_cells = max(1, int(round(weights.tss_lane_graph_lock_radius_nm / cell_nm)))
-        lane_graph_mask = lane_graph_mask_window(
-            context.tss.lane_graph,
-            grid,
-            x_off,
-            y_off,
-            mask.shape[0],
-            mask.shape[1],
-            radius_cells,
-        )
-        if lane_graph_mask.any():
-            y1 = y_off + mask.shape[0]
-            x1 = x_off + mask.shape[1]
-            lane_window = context.tss.lane_mask[y_off:y1, x_off:x1] > 0
-            lock_zone = lane_window & (mask > 0)
-            mask[lock_zone] = lane_graph_mask[lock_zone].astype(np.uint8)
-            if 0 <= sy_local < mask.shape[0] and 0 <= sx_local < mask.shape[1]:
-                mask[sy_local, sx_local] = 1
-            if 0 <= gy_local < mask.shape[0] and 0 <= gx_local < mask.shape[1]:
-                mask[gy_local, gx_local] = 1
-
     pre = precompute_corridor_arrays(
         mask,
         x_off,
@@ -338,7 +315,7 @@ def precompute_corridor_arrays(
     y1 = y_off + h
     x1 = x_off + w
 
-    depth_window = context.bathy.depth[y_off:y1, x_off:x1]
+    depth_window = context.bathy.depth_window(y_off, x_off, h, w)
     nodata = context.bathy.nodata
     blocked_depth = (depth_window == nodata) | (depth_window > -min_draft)
     if override_mask is not None and override_mask.size:
@@ -369,7 +346,7 @@ def precompute_corridor_arrays(
     if context.land is not None and weights is not None:
         max_cells = int(weights.land_proximity_max_distance_cells)
         if max_cells > 0 and weights.land_proximity_penalty != 0:
-            dist = context.land.distance_from_land[y_off:y1, x_off:x1].astype(np.float32)
+            dist = context.land.distance_window(y_off, x_off, h, w).astype(np.float32)
             land_prox_penalty = weights.land_proximity_penalty * (1.0 - dist / max_cells)
             land_prox_penalty[dist >= max_cells] = 0.0
         land_prox_penalty[~mask_bool] = 0.0

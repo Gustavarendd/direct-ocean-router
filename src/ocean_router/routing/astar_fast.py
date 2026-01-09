@@ -5,7 +5,7 @@ import heapq
 import math
 import time
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Callable
+from typing import List, Optional, Tuple, Callable, TYPE_CHECKING
 
 import numpy as np
 from scipy import ndimage
@@ -14,6 +14,37 @@ from ocean_router.core.geodesy import bearing_deg, rhumb_distance_nm, shortest_d
 from ocean_router.core.grid import GridSpec
 from ocean_router.routing.costs import CostContext, CostWeights
 from ocean_router.routing.corridor import precompute_corridor_arrays
+
+if TYPE_CHECKING:
+    from ocean_router.data.bathy import Bathy
+    from ocean_router.data.land import LandMask
+
+
+class _ArrayBathy:
+    def __init__(self, depth: np.ndarray, nodata: int = -32768) -> None:
+        self._depth = depth
+        self.nodata = nodata
+
+    @property
+    def depth(self) -> np.ndarray:
+        return self._depth
+
+    def depth_window(self, y_off: int, x_off: int, height: int, width: int) -> np.ndarray:
+        return self._depth[y_off:y_off + height, x_off:x_off + width]
+
+    def depth_value(self, y: int, x: int) -> float:
+        return float(self._depth[y, x])
+
+
+class _ArrayLandMask:
+    def __init__(self, mask: np.ndarray) -> None:
+        self._mask = mask
+
+    def sample(self, y: int, x: int) -> int:
+        return int(self._mask[y, x])
+
+    def window(self, y_off: int, x_off: int, height: int, width: int) -> np.ndarray:
+        return self._mask[y_off:y_off + height, x_off:x_off + width]
 
 
 @dataclass
@@ -735,6 +766,7 @@ class HierarchicalAStar:
                         goal_bearing=goal_bearing,
                         max_lane_deviation_deg=weights.tss_max_lane_deviation_deg,
                         proximity_check_radius=weights.tss_proximity_check_radius,
+                        grid=context.grid,
                     )
                     penalty += context.tss.boundary_crossing_penalty(gcy, gcx, gny, gnx, weights.tss_lane_crossing_penalty, weights.tss_sepzone_crossing_penalty, weights.tss_sepboundary_crossing_penalty)
                 
@@ -763,57 +795,39 @@ class HierarchicalAStar:
 
 
 def _build_global_coarse_mask(
-    bathy_depth: np.ndarray,
-    land_mask: Optional[np.ndarray],
+    bathy: "Bathy",
+    land: Optional["LandMask"],
     min_draft: float,
     scale: int,
     override_mask: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Build a coarse traversable mask for the entire grid.
-    
-    Uses MAJORITY rule: a coarse cell is traversable if >50% of fine cells are water.
-    This prevents routing through coastal areas where only a few cells are water.
-    """
-    h, w = bathy_depth.shape
-    
-    # Pad to make divisible by scale
-    pad_h = (scale - h % scale) % scale
-    pad_w = (scale - w % scale) % scale
-    
-    if pad_h > 0 or pad_w > 0:
-        depth_padded = np.pad(bathy_depth, ((0, pad_h), (0, pad_w)), constant_values=1)  # 1 = land
-        if land_mask is not None:
-            land_padded = np.pad(land_mask, ((0, pad_h), (0, pad_w)), constant_values=1)
-        else:
-            land_padded = None
-    else:
-        depth_padded = bathy_depth
-        land_padded = land_mask
-    
-    ch, cw = depth_padded.shape[0] // scale, depth_padded.shape[1] // scale
-    cells_per_block = scale * scale
-    threshold = 1  # Just need at least 1 water cell
-    
-    # Reshape into blocks
-    depth_blocks = depth_padded.reshape(ch, scale, cw, scale)
-    
-    # GEBCO: negative = underwater, safe if depth <= -min_draft
-    # Count traversable cells per block (must be majority)
-    depth_ok_count = (depth_blocks <= -min_draft).sum(axis=(1, 3))
-    coarse_depth_ok = depth_ok_count >= threshold
-    
-    if land_padded is not None:
-        land_blocks = land_padded.reshape(ch, scale, cw, scale)
-        # Count water cells (not land)
-        water_count = (land_blocks == 0).sum(axis=(1, 3))
-        coarse_not_land = water_count >= threshold
-        coarse_mask = (coarse_depth_ok & coarse_not_land).astype(np.uint8)
-    else:
-        coarse_mask = coarse_depth_ok.astype(np.uint8)
+    """Build a coarse traversable mask for the entire grid using windowed reads."""
+    h, w = bathy.depth.shape
+    ch = int(math.ceil(h / scale))
+    cw = int(math.ceil(w / scale))
+    coarse_mask = np.zeros((ch, cw), dtype=np.uint8)
+    threshold = 1
+
+    for cy in range(ch):
+        y0 = cy * scale
+        y1 = min(h, (cy + 1) * scale)
+        for cx in range(cw):
+            x0 = cx * scale
+            x1 = min(w, (cx + 1) * scale)
+            depth_block = bathy.depth_window(y0, x0, y1 - y0, x1 - x0)
+            depth_ok = (depth_block <= -min_draft).any()
+            if not depth_ok:
+                continue
+            if land is not None:
+                land_block = land.window(y0, x0, y1 - y0, x1 - x0)
+                water_ok = (land_block == 0).sum() >= threshold
+                if not water_ok:
+                    continue
+            coarse_mask[cy, cx] = 1
 
     if override_mask is not None and override_mask.shape == coarse_mask.shape:
         coarse_mask |= override_mask.astype(np.uint8)
-    
+
     return coarse_mask
 
 
@@ -825,8 +839,8 @@ def _global_coarse_astar(
     grid_dx: float,
     grid_dy: float,
     ymax: float,
-    bathy_depth: Optional[np.ndarray] = None,
-    land_mask: Optional[np.ndarray] = None,
+    bathy: Optional["Bathy"] = None,
+    land: Optional["LandMask"] = None,
     min_draft: float = 10.0
 ) -> Optional[List[Tuple[int, int]]]:
     """A* on coarse global grid. Returns path in fine grid coordinates.
@@ -847,10 +861,10 @@ def _global_coarse_astar(
         # Check fine scale
         fx, fy = start_xy
         fine_ok = True
-        if bathy_depth is not None:
-            fine_ok = fine_ok and bathy_depth[fy, fx] <= -min_draft
-        if land_mask is not None:
-            fine_ok = fine_ok and not land_mask[fy, fx]
+        if bathy is not None:
+            fine_ok = fine_ok and bathy.depth_value(fy, fx) <= -min_draft
+        if land is not None:
+            fine_ok = fine_ok and not land.sample(fy, fx)
         if fine_ok:
             local_mask[sy, sx] = 1  # Force enable
     
@@ -858,10 +872,10 @@ def _global_coarse_astar(
     if 0 <= gy < h and 0 <= gx < w and not local_mask[gy, gx]:
         fx, fy = goal_xy
         fine_ok = True
-        if bathy_depth is not None:
-            fine_ok = fine_ok and bathy_depth[fy, fx] <= -min_draft
-        if land_mask is not None:
-            fine_ok = fine_ok and not land_mask[fy, fx]
+        if bathy is not None:
+            fine_ok = fine_ok and bathy.depth_value(fy, fx) <= -min_draft
+        if land is not None:
+            fine_ok = fine_ok and not land.sample(fy, fx)
         if fine_ok:
             local_mask[gy, gx] = 1  # Force enable
     
@@ -966,7 +980,7 @@ def _draw_thick_line(arr: np.ndarray, x0: int, y0: int, x1: int, y1: int, width:
 def _build_corridor_from_path(
     coarse_path: List[Tuple[int, int]],
     grid_shape: Tuple[int, int],
-    land_mask: Optional[np.ndarray],
+    land_mask: Optional[object],
     corridor_width: int
 ) -> Tuple[np.ndarray, int, int]:
     """Build a narrow corridor mask around a coarse path.
@@ -1003,7 +1017,10 @@ def _build_corridor_from_path(
     
     # Subtract land if provided
     if land_mask is not None:
-        land_region = land_mask[y_min:y_max, x_min:x_max]
+        if hasattr(land_mask, "window"):
+            land_region = land_mask.window(y_min, x_min, h, w)
+        else:
+            land_region = land_mask[y_min:y_max, x_min:x_max]
         corridor = corridor & (land_region == 0)
     
     return corridor, x_min, y_min
@@ -1032,16 +1049,19 @@ class CoarseToFineAStar:
     def __init__(
         self,
         grid: GridSpec,
-        bathy_depth: np.ndarray,
-        land_mask: Optional[np.ndarray] = None,
+        bathy: "Bathy" | np.ndarray,
+        land_mask: Optional["LandMask" | np.ndarray] = None,
         coarse_scale: int = 32,  # Reduced from 64 for better resolution
         corridor_width_nm: float = 10.0,  # Reduced from 25.0 for narrower corridor
         coarse_override: Optional[np.ndarray] = None,
         canals: Optional[object] = None,
     ):
         self.grid = grid
-        self.bathy_depth = bathy_depth
-        self.land_mask = land_mask
+        self.bathy = _ArrayBathy(bathy) if isinstance(bathy, np.ndarray) else bathy
+        if isinstance(land_mask, np.ndarray):
+            self.land_mask = _ArrayLandMask(land_mask)
+        else:
+            self.land_mask = land_mask
         self.coarse_scale = coarse_scale
         # Convert corridor width from NM to fine-grid cells using grid.dx
         # (degrees -> NM conversion: 1 degree ≈ 60 NM)
@@ -1059,7 +1079,7 @@ class CoarseToFineAStar:
     def coarse_mask(self) -> np.ndarray:
         if self._coarse_mask is None:
             self._coarse_mask = _build_global_coarse_mask(
-                self.bathy_depth,
+                self.bathy,
                 self.land_mask,
                 min_draft=1.0,  # Use minimal draft for coarse - refine later
                 scale=self.coarse_scale,
@@ -1088,8 +1108,8 @@ class CoarseToFineAStar:
             self.grid.dx,
             self.grid.dy,
             self.grid.ymax,
-            bathy_depth=self.bathy_depth,
-            land_mask=self.land_mask,
+            bathy=self.bathy,
+            land=self.land_mask,
             min_draft=min_depth
         )
         
@@ -1233,7 +1253,7 @@ class CoarseToFineAStar:
                     return True
                 if blocked_mask[ly, lx]:
                     return True
-                if self.land_mask is not None and self.land_mask[y, x]:
+                if self.land_mask is not None and self.land_mask.sample(y, x):
                     if override_mask is None or not override_mask[ly, lx]:
                         return True
                 return False
@@ -1303,7 +1323,7 @@ class CoarseToFineAStar:
                 gny = y_off + ny
                 
                 # Check land mask first (faster than blocked)
-                if self.land_mask is not None and self.land_mask[gny, gnx]:
+                if self.land_mask is not None and self.land_mask.sample(gny, gnx):
                     if override_mask is None or not override_mask[ny, nx]:
                         continue
 
@@ -1391,6 +1411,7 @@ class CoarseToFineAStar:
                             goal_bearing=goal_bearing,
                             max_lane_deviation_deg=weights.tss_max_lane_deviation_deg,
                             proximity_check_radius=weights.tss_proximity_check_radius,
+                            grid=context.grid,
                         )
                     # Always apply boundary crossing penalties to avoid cutting across separation lines.
                     if (
@@ -1460,9 +1481,9 @@ class CoarseToFineAStar:
             return path_xy
         
         def is_blocked(x: int, y: int) -> bool:
-            if not (0 <= y < self.bathy_depth.shape[0] and 0 <= x < self.bathy_depth.shape[1]):
+            if not (0 <= y < self.bathy.depth.shape[0] and 0 <= x < self.bathy.depth.shape[1]):
                 return True
-            if self.land_mask is not None and self.land_mask[y, x]:
+            if self.land_mask is not None and self.land_mask.sample(y, x):
                 return True
             if context.blocked(y, x, min_depth):
                 return True
@@ -1484,18 +1505,11 @@ class CoarseToFineAStar:
                 x1, y1 = p1
                 if context.tss_disable_lane_smoothing and context.tss.line_intersects_lane(y0, x0, y1, x1):
                     return False
-                if context.tss_snap_lane_graph and context.tss.line_intersects_lane(y0, x0, y1, x1):
-                    (sx0, sy0), (sx1, sy1) = context.tss.snap_segment_to_lane(p0, p1)
-                    if context.tss.line_crosses_boundary(sy0, sx0, sy1, sx1):
-                        return False
-                else:
-                    if context.tss.line_crosses_boundary(y0, x0, y1, x1):
-                        return False
+                if context.tss.line_crosses_boundary(y0, x0, y1, x1):
+                    return False
             return True
         
         smoothed = _smooth_path_with_validator(path_xy, line_is_valid, max_skip)
-        if context.tss is not None and context.tss_snap_lane_graph:
-            smoothed = context.tss.snap_path_xy(smoothed)
         return smoothed
 
 
@@ -1622,18 +1636,11 @@ class FastCorridorAStar:
                         x1, y1 = p1
                         if context.tss_disable_lane_smoothing and context.tss.line_intersects_lane(y0, x0, y1, x1):
                             return False
-                        if context.tss_snap_lane_graph and context.tss.line_intersects_lane(y0, x0, y1, x1):
-                            (sx0, sy0), (sx1, sy1) = context.tss.snap_segment_to_lane(p0, p1)
-                            if context.tss.line_crosses_boundary(sy0, sx0, sy1, sx1):
-                                return False
-                        else:
-                            if context.tss.line_crosses_boundary(y0, x0, y1, x1):
-                                return False
+                        if context.tss.line_crosses_boundary(y0, x0, y1, x1):
+                            return False
                     return True
                 
                 smoothed = _smooth_path_with_validator(path_indices, line_is_valid)
-                if context.tss is not None and context.tss_snap_lane_graph:
-                    smoothed = context.tss.snap_path_xy(smoothed)
                 
                 lonlats = [self.grid.xy_to_lonlat(px, py) for px, py in smoothed]
                 return AStarResult(
@@ -1745,6 +1752,7 @@ class FastCorridorAStar:
                             goal_bearing=goal_bearing,
                             max_lane_deviation_deg=weights.tss_max_lane_deviation_deg,
                             proximity_check_radius=weights.tss_proximity_check_radius,
+                            grid=context.grid,
                         )
                     # Always apply boundary crossing penalties to avoid cutting across separation lines.
                     if (
