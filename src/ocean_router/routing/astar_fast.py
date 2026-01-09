@@ -10,6 +10,7 @@ from typing import List, Optional, Tuple, Callable
 import numpy as np
 from scipy import ndimage
 
+from ocean_router.core.geodesy import shortest_dlon
 from ocean_router.core.grid import GridSpec
 from ocean_router.routing.costs import CostContext, CostWeights
 from ocean_router.routing.corridor import precompute_corridor_arrays
@@ -360,7 +361,9 @@ def _coarse_astar(
         return None
     
     def heuristic(x: int, y: int) -> float:
-        return math.sqrt((x - cg[0])**2 + (y - cg[1])**2) * scale
+        dx = abs(x - cg[0])
+        dx = min(dx, w - dx)
+        return math.sqrt(dx**2 + (y - cg[1])**2) * scale
     
     open_set = [(0.0, cs)]
     came_from = {}
@@ -385,8 +388,9 @@ def _coarse_astar(
         cx, cy = current
         for dx, dy, mult in MOVES_8:
             nx, ny = int(cx + dx), int(cy + dy)
-            if not (0 <= ny < h and 0 <= nx < w):
+            if not (0 <= ny < h):
                 continue
+            nx %= w
             if not coarse_mask[ny, nx]:
                 continue
             neighbor = (nx, ny)
@@ -465,6 +469,7 @@ class HierarchicalAStar:
         if corridor_mask is None or not corridor_mask.size:
             corridor_mask = self.corridor_mask
         h, w = corridor_mask.shape
+        wrap_x = self.x_off == 0 and w == self.grid.width
         if not (0 <= sy < h and 0 <= sx < w and corridor_mask[sy, sx]):
             raise ValueError("start outside corridor")
         if not (0 <= gy < h and 0 <= gx < w and corridor_mask[gy, gx]):
@@ -513,6 +518,7 @@ class HierarchicalAStar:
         """Fine-grained A* search in a narrow corridor."""
         h, w = corridor.shape
         corridor_mask = corridor
+        wrap_x = self.x_off == 0 and w == self.grid.width
         
         # Use arrays for faster access
         INF = 1e30
@@ -540,7 +546,7 @@ class HierarchicalAStar:
             lon, lat = self.grid.xy_to_lonlat(gx, gy)
             # Approximate distance in NM
             dlat = abs(lat - goal_lat) * 60
-            dlon = abs(lon - goal_lon) * 60 * math.cos(math.radians((lat + goal_lat) / 2))
+            dlon = abs(shortest_dlon(lon, goal_lon)) * 60 * math.cos(math.radians((lat + goal_lat) / 2))
             return math.sqrt(dlat**2 + dlon**2)
         
         open_set = [(heuristic(start[0], start[1]), start)]
@@ -664,9 +670,13 @@ class HierarchicalAStar:
             for idx, (dx, dy, base_mult) in enumerate(MOVES_8):
                 dx, dy = int(dx), int(dy)
                 nx, ny = cx + dx, cy + dy
-                
+
                 t0 = time.perf_counter()
-                if not (0 <= ny < h and 0 <= nx < w):
+                if not (0 <= ny < h):
+                    continue
+                if wrap_x:
+                    nx %= w
+                elif not (0 <= nx < w):
                     continue
                 if closed[ny, nx]:
                     continue
@@ -866,7 +876,9 @@ def _global_coarse_astar(
         lat = ymax - (cy * scale + scale // 2) * grid_dy
         goal_lat = ymax - (gy * scale + scale // 2) * grid_dy
         dlat = abs(cy - gy) * scale * grid_dy * 60
-        dlon = abs(cx - gx) * scale * grid_dx * 60 * math.cos(math.radians((lat + goal_lat) / 2))
+        dx_cells = abs(cx - gx)
+        dx_cells = min(dx_cells, w - dx_cells)
+        dlon = dx_cells * scale * grid_dx * 60 * math.cos(math.radians((lat + goal_lat) / 2))
         return math.sqrt(dlat**2 + dlon**2)
     
     open_set = [(heuristic(sx, sy), (sx, sy))]
@@ -901,8 +913,9 @@ def _global_coarse_astar(
         
         for dx, dy, mult in MOVES_8:
             nx, ny = int(cx + dx), int(cy + dy)
-            if not (0 <= ny < h and 0 <= nx < w):
+            if not (0 <= ny < h):
                 continue
+            nx %= w
             if not local_mask[ny, nx]:
                 continue
             neighbor = (nx, ny)
@@ -1172,7 +1185,7 @@ class CoarseToFineAStar:
         def heuristic(x: int, y: int) -> float:
             lon, lat = self.grid.xy_to_lonlat(x + x_off, y + y_off)
             dlat = abs(lat - goal_lat) * 60
-            dlon = abs(lon - goal_lon) * 60 * math.cos(math.radians((lat + goal_lat) / 2))
+            dlon = abs(shortest_dlon(lon, goal_lon)) * 60 * math.cos(math.radians((lat + goal_lat) / 2))
             return math.sqrt(dlat**2 + dlon**2)
         
         open_set = [(heuristic(sx, sy), (sx, sy))]
@@ -1206,6 +1219,7 @@ class CoarseToFineAStar:
         corridor_mask = corridor if snap_mask is None or not snap_mask.size else snap_mask
         goal_x_g = x_off + gx
         goal_y_g = y_off + gy
+        wrap_x = x_off == 0 and w == self.grid.width
         row_step_nms = _precompute_row_step_nms(self.grid, y_off, h)
         goal_bearing_grid = _precompute_goal_bearing(x_off, y_off, w, h, goal_x_g, goal_y_g)
         
@@ -1247,8 +1261,12 @@ class CoarseToFineAStar:
             for idx, (dx, dy, _) in enumerate(MOVES_8):
                 dx, dy = int(dx), int(dy)
                 nx, ny = cx + dx, cy + dy
-                
-                if not (0 <= ny < h and 0 <= nx < w):
+
+                if not (0 <= ny < h):
+                    continue
+                if wrap_x:
+                    nx %= w
+                elif not (0 <= nx < w):
                     continue
                 if closed[ny, nx]:
                     continue
@@ -1489,7 +1507,7 @@ class FastCorridorAStar:
             lon, lat = self.grid.xy_to_lonlat(px, py)
             # Fast approximate distance
             dlat = abs(lat - goal_lat) * 60
-            dlon = abs(lon - goal_lon) * 60 * math.cos(math.radians((lat + goal_lat) / 2))
+            dlon = abs(shortest_dlon(lon, goal_lon)) * 60 * math.cos(math.radians((lat + goal_lat) / 2))
             return math.sqrt(dlat**2 + dlon**2)
         
         open_set = [(heuristic(sx, sy), (sx, sy))]
@@ -1588,7 +1606,11 @@ class FastCorridorAStar:
                 nx, ny = cx + dx, cy + dy
                 
                 t0 = time.perf_counter()
-                if not (0 <= ny < h and 0 <= nx < w):
+                if not (0 <= ny < h):
+                    continue
+                if wrap_x:
+                    nx %= w
+                elif not (0 <= nx < w):
                     continue
                 if closed[ny, nx]:
                     continue

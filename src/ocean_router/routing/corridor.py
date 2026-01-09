@@ -11,7 +11,7 @@ from rasterio import features
 import rasterio
 from scipy import ndimage
 
-from ocean_router.core.geodesy import bearing_deg
+from ocean_router.core.geodesy import bearing_deg, unwrap_lon
 from ocean_router.core.grid import GridSpec, window_from_bbox
 from ocean_router.data.canals import canal_mask_window
 
@@ -45,12 +45,29 @@ def build_corridor(
         x_off: X offset into global grid
         y_off: Y offset into global grid
     """
-    # Create line between start and end
-    line = LineString([start, end])
-    
-    # Buffer the line to create corridor (round caps to include endpoints)
     buffer_deg = width_nm / 60.0
-    corridor_geom = line.buffer(buffer_deg, cap_style=1)  # round cap
+    span = grid.lon_span
+    start_lon, start_lat = start
+    end_lon, end_lat = end
+    end_lon = unwrap_lon(end_lon, start_lon)
+
+    lines = []
+    if end_lon > grid.xmax:
+        boundary = grid.xmax
+        frac = (boundary - start_lon) / (end_lon - start_lon)
+        lat_at = start_lat + (end_lat - start_lat) * frac
+        lines.append(LineString([(start_lon, start_lat), (boundary, lat_at)]))
+        lines.append(LineString([(grid.xmin, lat_at), (end_lon - span, end_lat)]))
+    elif end_lon < grid.xmin:
+        boundary = grid.xmin
+        frac = (boundary - start_lon) / (end_lon - start_lon)
+        lat_at = start_lat + (end_lat - start_lat) * frac
+        lines.append(LineString([(start_lon, start_lat), (boundary, lat_at)]))
+        lines.append(LineString([(grid.xmax, lat_at), (end_lon + span, end_lat)]))
+    else:
+        lines.append(LineString([(start_lon, start_lat), (end_lon, end_lat)]))
+
+    corridor_geom = unary_union([line.buffer(buffer_deg, cap_style=1) for line in lines])
     
     # Get bounding box
     minx, miny, maxx, maxy = corridor_geom.bounds

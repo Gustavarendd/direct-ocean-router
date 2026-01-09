@@ -273,7 +273,10 @@ if NUMBA_AVAILABLE:
         lat = ymax - (y + 0.5) * dy
         dlat = abs(lat - goal_lat) * 60.0
         mid_lat = (lat + goal_lat) / 2.0
-        dlon = abs(lon - goal_lon) * 60.0 * math.cos(math.radians(mid_lat))
+        dlon_deg = abs(lon - goal_lon)
+        if dlon_deg > 180.0:
+            dlon_deg = 360.0 - dlon_deg
+        dlon = dlon_deg * 60.0 * math.cos(math.radians(mid_lat))
         return math.sqrt(dlat * dlat + dlon * dlon)
 
     @njit(cache=True, parallel=False)
@@ -299,6 +302,7 @@ if NUMBA_AVAILABLE:
         grid_dx: float, grid_dy: float,
         xmin: float, ymax: float,
         goal_lon: float, goal_lat: float,
+        wrap_x: bool,
         near_shore_penalty: float,
         turn_penalty: float,
         tss_wrong_way_penalty: float,
@@ -389,7 +393,11 @@ if NUMBA_AVAILABLE:
                 nx = cx + dx_m
                 ny = cy + dy_m
                 
-                if nx < 0 or nx >= w or ny < 0 or ny >= h:
+                if ny < 0 or ny >= h:
+                    continue
+                if wrap_x:
+                    nx = (nx + w) % w
+                elif nx < 0 or nx >= w:
                     continue
                 if closed[ny, nx]:
                     continue
@@ -556,6 +564,7 @@ class NumbaAStar:
         grid_dy_nm = self.grid.dy * 60.0
         base_step = np.hypot(grid_dx_nm * lat_factor, grid_dy_nm) / math.sqrt(2.0)
         row_step_nms = (base_step[:, None] * np.array([1.0, 1.414, 1.0, 1.414, 1.0, 1.414, 1.0, 1.414], dtype=np.float32)[None, :]).astype(np.float32)
+        wrap_x = self.x_off == 0 and self.corridor_mask.shape[1] == self.grid.width
         
         # Run Numba core
         came_from_x, came_from_y, g_score, final_cost, explored, success = _astar_numba_core(
@@ -578,6 +587,7 @@ class NumbaAStar:
             self.grid.dx, self.grid.dy,
             self.grid.xmin, self.grid.ymax,
             goal_lonlat[0], goal_lonlat[1],
+            wrap_x,
             weights.near_shore_depth_penalty,
             weights.turn_penalty_weight,
             weights.tss_wrong_way_penalty,
