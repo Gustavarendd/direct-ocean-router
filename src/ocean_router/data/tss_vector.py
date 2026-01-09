@@ -247,8 +247,8 @@ def build_tss_vector_graph(
     zones: list[Polygon] = []
 
     for feat in features:
-        if _feature_is_inland(feat, skip_waterways):
-            continue
+        # if _feature_is_inland(feat, skip_waterways):
+        #     continue
         seamark_type = get_seamark_type(feat)
         if seamark_type in TSS_LANE_TYPES:
             flow = _get_flow_bearing(feat)

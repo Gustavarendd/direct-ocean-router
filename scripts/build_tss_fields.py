@@ -255,7 +255,7 @@ def main() -> None:
     parser.add_argument("--tss-geojson", type=Path, required=True, 
                         help="GeoJSON file with TSS features and tss_flow_bearing_deg")
     parser.add_argument("--outdir", type=Path, default=Path("data/processed/tss"))
-    parser.add_argument("--influence-nm", type=float, default=2.0,
+    parser.add_argument("--influence-nm", type=float, default=0.5,
                         help="Influence radius in nautical miles for direction field")
     args = parser.parse_args()
     

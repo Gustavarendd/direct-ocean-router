@@ -158,7 +158,7 @@ The vector TSS layer builds a directed lane graph from seamark centerlines and u
 ### Build + cache the TSS vector graph
 
 ```bash
-python - <<'PY'
+pip install -e . && python - <<'PY'
 from pathlib import Path
 from ocean_router.tss.tss_graph import (
     build_directed_lane_graph,
@@ -166,7 +166,7 @@ from ocean_router.tss.tss_graph import (
     load_tss_geojson,
 )
 
-geojson = Path("/mnt/data/separation_lanes_with_direction.geojson")
+geojson = Path("data/raw/separation_lanes_with_direction.geojson")
 features = filter_ocean_tss_features(load_tss_geojson(geojson))
 graph = build_directed_lane_graph(features, sepzone_buffer_nm=0.2)
 graph.save(Path("data/processed/tss/tss_vector_graph.pkl"))
@@ -185,7 +185,7 @@ PY
 
 ### Routing usage
 
-Use `route_with_tss(start, goal, open_sea_router, tss_graph, forbidden, config)` to run a combined A* search over open-sea + TSS lanes, returning a lane-following polyline when appropriate.
+Use `route_with_tss(start, goal, open_sea_router, tss_graph, forbidden, config)` to run a combined A\* search over open-sea + TSS lanes, returning a lane-following polyline when appropriate.
 
 ## API Server
 

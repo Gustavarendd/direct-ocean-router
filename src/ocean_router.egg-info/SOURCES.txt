@@ -40,3 +40,6 @@ src/ocean_router/routing/lane_graph.py
 src/ocean_router/routing/reconstruct.py
 src/ocean_router/routing/simplify.py
 src/ocean_router/routing/tss_hybrid.py
+src/ocean_router/tss/__init__.py
+src/ocean_router/tss/tss_graph.py
+tests/test_tss_graph.py

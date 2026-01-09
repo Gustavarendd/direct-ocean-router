@@ -41,18 +41,18 @@ corridor:
 tss:
   # Penalties
   wrong_way_penalty: 5.0 # Going wrong way in lane - very dangerous
-  alignment_weight: 1.0 # Bonus for following TSS lanes correctly (~10-20% preference)
+  alignment_weight: 2.0 # Bonus for following TSS lanes correctly (~10-20% preference)
   off_lane_penalty: 2.0 # Penalty when near correct-direction TSS but not in lane
   lane_crossing_penalty: 5.0 # Small penalty for EXITING lanes
   sepzone_crossing_penalty: 100.0 # High penalty for separation zones
-  sepboundary_crossing_penalty: 50.0 # Penalty for crossing separation boundary lines
+  sepboundary_crossing_penalty: 1000.0 # Penalty for crossing separation boundary lines
 
   # Proximity check - check wrong-way lanes within this radius (cells)
   # At 0.5nm resolution: 2 cells = ~1nm
   proximity_check_radius: 2
 
   # Maximum lane-to-goal angle deviation before applying penalty
-  max_lane_deviation_deg: 90.0
+  max_lane_deviation_deg: 60.0
 
   # Corridor snapping to correct-direction lanes
   snap_corridor_enabled: true
