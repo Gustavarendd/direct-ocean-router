@@ -1565,6 +1565,7 @@ class FastCorridorAStar:
         tss_in_or_near = self.precomputed.get('tss_in_or_near') if hasattr(self, 'precomputed') else None
         tss_sepzone = self.precomputed.get('tss_sepzone') if hasattr(self, 'precomputed') else None
         tss_sepboundary = self.precomputed.get('tss_sepboundary') if hasattr(self, 'precomputed') else None
+        wrap_x = self.x_off == 0 and w == self.grid.width
         row_step_nms = _precompute_row_step_nms(self.grid, self.y_off, h)
         goal_bearing_grid = _precompute_goal_bearing(self.x_off, self.y_off, w, h, self.x_off + gx, self.y_off + gy)
         
