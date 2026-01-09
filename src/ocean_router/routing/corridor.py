@@ -385,6 +385,8 @@ def precompute_corridor_arrays(
                 y_start = y_off - wy0
                 x_start = x_off - wx0
                 tss_in_or_near = near_window[y_start:y_start + h, x_start:x_start + w]
+                tss_in_or_near |= tss_in_lane
+                tss_in_or_near &= mask_bool
         else:
             tss_in_or_near = context.tss.lane_mask[y_off:y1, x_off:x1] > 0
             tss_in_or_near &= mask_bool
