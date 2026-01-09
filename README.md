@@ -151,6 +151,42 @@ Place raw inputs under `data/raw/`:
 
 Processed outputs live in `data/processed/` under subfolders for land, bathy, tss, density, basins, and cached corridors.
 
+## Vector TSS routing (hybrid)
+
+The vector TSS layer builds a directed lane graph from seamark centerlines and uses connector edges to splice open-sea routing into the lane network. This avoids ultra-fine global grids while enforcing Rule 10-style behavior (directional lanes, separation zones forbidden, angle-biased crossings).
+
+### Build + cache the TSS vector graph
+
+```bash
+python - <<'PY'
+from pathlib import Path
+from ocean_router.tss.tss_graph import (
+    build_directed_lane_graph,
+    filter_ocean_tss_features,
+    load_tss_geojson,
+)
+
+geojson = Path("/mnt/data/separation_lanes_with_direction.geojson")
+features = filter_ocean_tss_features(load_tss_geojson(geojson))
+graph = build_directed_lane_graph(features, sepzone_buffer_nm=0.2)
+graph.save(Path("data/processed/tss/tss_vector_graph.pkl"))
+print(f"cached edges={len(graph.edges)} zones={len(graph.zones)}")
+PY
+```
+
+### Configuration knobs (defaults in `TSSGraphConfig`)
+
+- `sepzone_buffer_nm`: buffer width (nm) when separation zones are only linework.
+- `connector_radius_nm`: search radius (nm) for lane entry/exit connectors.
+- `max_connectors`: maximum connector candidates per endpoint.
+- `entry_angle_weight` / `entry_max_angle_deg`: penalty + cutoff for entry/exit angle mismatch.
+- `crossing_target_deg` / `crossing_angle_weight` / `crossing_max_angle_deg`: 90° crossing preference + cutoff.
+- `crossing_penalty`: multiplier for crossing connectors (discourages crossings unless needed).
+
+### Routing usage
+
+Use `route_with_tss(start, goal, open_sea_router, tss_graph, forbidden, config)` to run a combined A* search over open-sea + TSS lanes, returning a lane-following polyline when appropriate.
+
 ## API Server
 
 ```bash
