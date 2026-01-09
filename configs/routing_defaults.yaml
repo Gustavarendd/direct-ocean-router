@@ -15,9 +15,9 @@ algorithm:
   coarse_to_fine_threshold_nm: 100
 
   # Scale factor for coarse grid in coarse-to-fine A*
-  coarse_scale: 8
+  coarse_scale: 10
   # Heuristic weight for A* (weighted A*). >1.0 trades optimality for speed.
-  heuristic_weight: 1.5
+  heuristic_weight: 1.0
 
 # ----------------------------------------------------------------------
 # Corridor Settings
@@ -40,12 +40,12 @@ corridor:
 # ----------------------------------------------------------------------
 tss:
   # Penalties
-  wrong_way_penalty: 5.0 # Going wrong way in lane - very dangerous
+  wrong_way_penalty: 2.0 # Going wrong way in lane - very dangerous
   alignment_weight: 2.0 # Bonus for following TSS lanes correctly (~10-20% preference)
   off_lane_penalty: 2.0 # Penalty when near correct-direction TSS but not in lane
   lane_crossing_penalty: 5.0 # Small penalty for EXITING lanes
   sepzone_crossing_penalty: 100.0 # High penalty for separation zones
-  sepboundary_crossing_penalty: 1000.0 # Penalty for crossing separation boundary lines
+  sepboundary_crossing_penalty: 100.0 # Penalty for crossing separation boundary lines
 
   # Proximity check - check wrong-way lanes within this radius (cells)
   # At 0.5nm resolution: 2 cells = ~1nm
