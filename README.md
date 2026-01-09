@@ -96,7 +96,7 @@ python scripts/build_tss_fields.py \
 Tile-backed rasters keep routing memory usage low by reading only the tiles needed for each corridor.
 
 ```bash
-python -m ocean_router.cli.main preprocess tile-rasters \
+pip install -e . && python -m ocean_router.cli.main preprocess tile-rasters \
   --grid configs/grid_1nm.json \
   --land data/processed/land/land_mask_strict_1nm.npy \
   --land-buffered data/processed/land/land_mask_strict_1nm_buffered.npy \

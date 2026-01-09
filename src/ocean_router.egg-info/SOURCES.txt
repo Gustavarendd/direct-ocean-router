@@ -21,6 +21,7 @@ src/ocean_router/core/geodesy.py
 src/ocean_router/core/grid.py
 src/ocean_router/core/logging.py
 src/ocean_router/core/memmaps.py
+src/ocean_router/core/tiled_raster.py
 src/ocean_router/data/__init__.py
 src/ocean_router/data/basins.py
 src/ocean_router/data/bathy.py
@@ -38,11 +39,10 @@ src/ocean_router/routing/astar_fast.py
 src/ocean_router/routing/astar_numba.py
 src/ocean_router/routing/corridor.py
 src/ocean_router/routing/costs.py
-src/ocean_router/routing/lane_graph.py
 src/ocean_router/routing/reconstruct.py
 src/ocean_router/routing/simplify.py
 src/ocean_router/routing/tss_hybrid.py
 src/ocean_router/tss/__init__.py
-src/ocean_router/tss/tss_graph.py
+src/ocean_router/tss/tss_strtree.py
 tests/test_land_guard.py
-tests/test_tss_graph.py
+tests/test_tss_strtree.py

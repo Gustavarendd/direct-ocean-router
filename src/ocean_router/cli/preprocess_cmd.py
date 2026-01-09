@@ -56,7 +56,21 @@ def tile_rasters(
 
 def _tile_raster(path: Path, tiles_dir: Path, grid: GridSpec, tile_size: int, nodata: int | float) -> None:
     tiles_dir.mkdir(parents=True, exist_ok=True)
-    array = np.load(path, mmap_mode="r")
+    try:
+        array = np.load(path, mmap_mode="r")
+    except Exception:
+        meta_path = path.with_suffix(".meta.json")
+        if meta_path.exists():
+            with meta_path.open("r", encoding="utf-8") as handle:
+                meta = json.load(handle)
+            dtype = np.dtype(meta["dtype"])
+            shape = tuple(meta["shape"])
+            try:
+                array = np.memmap(path, dtype=dtype, mode="r", shape=shape)
+            except Exception:
+                array = np.fromfile(path, dtype=dtype).reshape(shape)
+        else:
+            raise
     height, width = array.shape
     tiles_x = int(np.ceil(width / tile_size))
     tiles_y = int(np.ceil(height / tile_size))
@@ -86,7 +100,9 @@ def _tile_raster(path: Path, tiles_dir: Path, grid: GridSpec, tile_size: int, no
         "nodata": nodata,
         "tiles_x": tiles_x,
         "tiles_y": tiles_y,
-        "tiles_dir": str(tiles_dir),
+        # Store tiles_dir as relative path ('.') so loaders resolve it
+        # relative to the meta.json location and avoid duplicated paths.
+        "tiles_dir": ".",
     }
     with meta_path.open("w", encoding="utf-8") as handle:
         json.dump(payload, handle, indent=2)
